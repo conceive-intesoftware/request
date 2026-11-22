@@ -4,6 +4,12 @@ export const EXPORT_COLUMNS = [
   "rice", "sistema_externo", "id_externo", "criado_em",
 ];
 
+/** Títulos legíveis (com acento) do cabeçalho do CSV. */
+const HEADER_LABELS: Record<string, string> = {
+  protocolo: "Protocolo", titulo: "Título", clinica: "Clínica", modulo: "Módulo", tipo: "Tipo", status: "Status",
+  prioridade: "Prioridade", rice: "RICE", sistema_externo: "Sistema externo", id_externo: "ID externo", criado_em: "Criado em",
+};
+
 /** CSV seguro para Excel: protege contra "CSV/formula injection" (=, +, -, @) e escapa aspas. */
 export function toCsv(rows: Record<string, unknown>[], columns?: string[]): string {
   if (rows.length === 0) return "";
@@ -13,7 +19,7 @@ export function toCsv(rows: Record<string, unknown>[], columns?: string[]): stri
     if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return `"${s.replace(/"/g, '""')}"`;
   };
-  return [headers.join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))].join("\r\n");
+  return [headers.map((h) => `"${HEADER_LABELS[h] ?? h}"`).join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))].join("\r\n");
 }
 
 /** Só no navegador. BOM para o Excel abrir acentos corretamente. */

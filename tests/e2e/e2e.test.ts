@@ -139,6 +139,26 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await visitor.waitForSelector("#clinic");
     assert.equal(await visitor.locator("button:has-text('Enviar solicitação')").isDisabled(), false);
   });
+  await step("descrição: placeholder novo e dica de LGPD (sem o texto antigo)", async () => {
+    assert.equal(await visitor.getAttribute("#desc", "placeholder"), "Escreva a sua solicitação aqui…");
+    const html = await visitor.content();
+    assert.ok(!html.includes("Qual problema quer resolver"), "texto antigo removido");
+    assert.ok(html.includes("não inclua dados pessoais de pacientes (nome, CPF, prontuário)"));
+  });
+  await step("cabeçalho: abas sem barra de rolagem em 1045, 1280 e 390 px", async () => {
+    for (const w of [1280, 1045, 390]) {
+      await visitor.setViewportSize({ width: w, height: 800 });
+      const m = await visitor.evaluate(() => {
+        const el = document.querySelector(".site-tabs") as HTMLElement;
+        const cs = getComputedStyle(el);
+        return { v: el.scrollHeight > el.clientHeight + 1, sbw: el.offsetWidth - el.clientWidth, sbh: el.offsetHeight - el.clientHeight, ox: cs.overflowX, page: document.documentElement.scrollWidth > window.innerWidth };
+      });
+      assert.equal(m.v, false, `sem rolagem vertical (${w}px)`);
+      assert.equal(m.sbw + m.sbh, 0, `sem barra visível (${w}px)`);
+      assert.equal(m.page, false, `sem rolagem horizontal da página (${w}px)`);
+    }
+    await visitor.setViewportSize({ width: 1280, height: 800 });
+  });
   await step("envio vazio mostra erros de validação em cada campo", async () => {
     await visitor.click("button:has-text('Enviar solicitação')");
     for (const t of ["Revise os campos destacados.", "Selecione sua clínica", "Informe seu nome completo.", "Selecione seu cargo", "WhatsApp inválido", "Selecione o módulo", "Selecione o tipo", "Título muito curto", "Descreva com mais detalhes"]) {
@@ -393,7 +413,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await po.click(".seg button:has-text('Lista')");
     const [dl] = await Promise.all([po.waitForEvent("download"), po.click("button:has-text('Exportar CSV')")]);
     const text = readFileSync(await dl.path(), "utf8");
-    assert.ok(text.includes("protocolo,titulo,clinica"));
+    assert.ok(text.includes('"Protocolo","Título","Clínica"'));
     assert.ok(text.includes("Pagamento antecipado"));
     assert.ok(!text.includes("Sarah") && !text.includes("+55"));
   });

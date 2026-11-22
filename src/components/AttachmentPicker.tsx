@@ -53,7 +53,7 @@ export function AttachmentPicker({ files, onChange, disabled }: { files: File[];
       if (got.length === 0) return setMsgs(["Nenhuma imagem encontrada na área de transferência. Copie um print primeiro (Win+Shift+S) e tente de novo."]);
       add(got, "Imagem colada.");
     } catch {
-      setMsgs(["O navegador não liberou o acesso à área de transferência. Clique na página e use Ctrl+V."]);
+      setMsgs(["O navegador não liberou o acesso à área de transferência. Clique na página e use Ctrl + V."]);
     }
   }
 

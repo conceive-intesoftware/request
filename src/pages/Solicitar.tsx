@@ -327,9 +327,9 @@ export default function Solicitar() {
           label="Descrição detalhada"
           htmlFor="desc"
           error={errors.description}
-          hint="Qual problema quer resolver? Como é hoje e como deveria ser? Não inclua dados de pacientes (nome, CPF, prontuário)."
+          hint="Por conformidade com a LGPD, não inclua dados pessoais de pacientes (nome, CPF, prontuário)."
         >
-          <textarea id="desc" className="input" rows={8} maxLength={8000} value={v.description} onChange={(e) => set("description", e.target.value)} />
+          <textarea id="desc" className="input" rows={8} maxLength={8000} placeholder="Escreva a sua solicitação aqui…" value={v.description} onChange={(e) => set("description", e.target.value)} />
           <p className="counter">{v.description.length}/8000</p>
         </Field>
 

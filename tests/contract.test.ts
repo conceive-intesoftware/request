@@ -264,7 +264,7 @@ const base = {
     const rows = await api.exportRequests({ module: "FINANCEIRO" });
     assert.ok(rows.length >= 1);
     const csv = toCsv(rows, EXPORT_COLUMNS);
-    assert.ok(csv.startsWith("protocolo,titulo,clinica,modulo,tipo,status,prioridade,rice,sistema_externo,id_externo,criado_em"));
+    assert.ok(csv.startsWith('"Protocolo","Título","Clínica","Módulo","Tipo","Status","Prioridade","RICE","Sistema externo","ID externo","Criado em"'));
     assert.ok(rows.every((r) => EXPORT_COLUMNS.every((c) => c in r)), "o banco devolve todas as colunas esperadas");
     assert.ok(!csv.includes("Sarah") && !csv.includes("+55"));
     const audit = db.sql(`select count(*) from public.audit_logs where action = 'EXPORT'`).trim();

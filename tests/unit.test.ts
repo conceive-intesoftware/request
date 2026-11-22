@@ -88,12 +88,12 @@ console.log("CSV");
 test("escapa aspas e protege contra fórmulas", () => {
   const csv = toCsv([{ a: 'diz "oi"', b: "=HYPERLINK(\"x\")", c: "+1", d: "-2", e: "@x", f: null, g: 5 }]);
   const [h, row] = csv.split("\r\n");
-  assert.equal(h, "a,b,c,d,e,f,g");
+  assert.equal(h, '"a","b","c","d","e","f","g"');
   assert.equal(row, `"diz ""oi""","'=HYPERLINK(""x"")","'+1","'-2","'@x","","5"`);
 });
 test("lista vazia => string vazia", () => assert.equal(toCsv([]), ""));
 test("respeita a ordem de colunas informada", () => {
-  assert.equal(toCsv([{ b: 1, a: 2, z: 3 }], ["a", "b"]), `a,b\r\n"2","1"`);
+  assert.equal(toCsv([{ b: 1, a: 2, z: 3 }], ["a", "b"]), `"a","b"\r\n"2","1"`);
 });
 
 console.log("mensagens de erro");

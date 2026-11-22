@@ -118,8 +118,8 @@ textarea.input { resize: vertical; }
 .site-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); padding: 8px 0; }
 .site-brand strong { display: block; font-size: 1.1rem; letter-spacing: -.01em; line-height: 1.1; }
 .site-brand small { display: block; color: var(--muted); font-size: .72rem; letter-spacing: .02em; }
-.site-tabs { display: flex; gap: 4px; align-self: stretch; margin-left: auto; overflow-x: auto; }
-.site-tab { display: flex; align-items: center; padding: 0 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: .9rem; white-space: nowrap; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.site-tabs { display: flex; gap: 4px; align-self: stretch; margin-left: auto; }
+.site-tab { display: flex; align-items: center; padding: 0 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: .9rem; white-space: nowrap; border-bottom: 3px solid transparent; }
 .site-tab:hover { color: var(--text); }
 .site-tab.on { color: var(--brand); border-bottom-color: var(--brand-2); }
 .site-tab.staff { margin-left: 8px; }
@@ -134,7 +134,7 @@ textarea.input { resize: vertical; }
 .req-title { font-size: 1.4rem; margin: 22px 0 4px; letter-spacing: -.01em; }
 .login-card { margin-top: 24px; } .login-card h2 { margin-bottom: 12px; }
 .site-footer { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; max-width: 1040px; width: 100%; margin: 0 auto; padding: 18px 16px 28px; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line); }
-@media (max-width: 720px) { .site-header-in { gap: 0; } .site-tabs { margin-left: 0; width: 100%; } .site-tab { padding: 10px 12px; } .hero-in { padding: 24px 16px 28px; } .hero h1 { font-size: 1.4rem; } }
+@media (max-width: 960px) { .site-header-in { gap: 0; } .site-tabs { margin-left: 0; width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; } .site-tabs::-webkit-scrollbar { display: none; } .site-tab { padding: 10px 12px; } .hero-in { padding: 24px 16px 28px; } .hero h1 { font-size: 1.4rem; } }
 
 /* ───────── Anexos ───────── */
 .dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 18px; text-align: center; background: color-mix(in srgb, var(--surface) 70%, var(--bg)); transition: border-color .15s, background .15s; }

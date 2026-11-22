@@ -18,7 +18,7 @@ Ordem: primeiro o Supabase (banco), depois o GitHub (site). Não pule a Parte 1,
 1. No menu lateral: **SQL Editor** → **New query**.
 2. Abra o arquivo `supabase/migrations/20261121000000_init.sql` deste projeto, copie **tudo** e cole no editor.
 3. Clique em **Run**.
-4. O Supabase pode perguntar sobre "destrutive operations" (o script contém `drop trigger/policy if exists` e `revoke`). É esperado: confirme com **Run this query**.
+4. O Supabase pode perguntar sobre "destructive operations" (o script contém `drop trigger/policy if exists` e `revoke`). É esperado: confirme com **Run this query**.
 5. Resultado esperado: `Success. No rows returned`.
 
 > **Já rodou a versão anterior?** Rode este arquivo **inteiro de novo**: ele atualiza o limite de anexos para 50 MB sem apagar nenhum dado.
