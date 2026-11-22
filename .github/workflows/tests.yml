@@ -1,0 +1,40 @@
+name: Testes
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - name: Tipos (TypeScript)
+        run: npm run typecheck
+      - name: Testes unitários
+        run: npm run test:unit
+      - name: Testes do banco (RLS, RPCs, auditoria)
+        run: npm run test:db
+      - name: Testes de contrato (front ↔ banco)
+        run: npm run test:contract
