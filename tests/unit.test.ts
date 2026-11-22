@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { DDD_VALIDOS, formatPhoneBR, maskPhoneInput, normalizeBrPhone, whatsappLink } from "../src/lib/phone";
 import { toCsv } from "../src/lib/csv";
 import { validateRequestForm, type RequestFormValues } from "../src/lib/validate";
-import { MODULES, PRIORITIES, REQUESTER_ROLES, STATUSES, STAFF_ROLES, TYPES, labelOf } from "../src/lib/labels";
+import { addFiles, filesFromClipboard, pastedName } from "../src/lib/attachments";
+import { MODULES, PRIORITIES, REQUESTER_ROLES, STATUSES, STAFF_ROLES, TYPES, MAX_FILE_MB, labelOf } from "../src/lib/labels";
 import { friendlyMessage } from "../src/lib/api";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -131,10 +132,52 @@ test("labelOf", () => {
   assert.equal(labelOf(STATUSES, null), "—");
 });
 test("anexos: limites do front == limites do bucket", () => {
-  assert.match(sql, /26214400/); // 25 MB
+  assert.match(sql, /52428800/); // 50 MB
+  assert.equal(MAX_FILE_MB * 1024 * 1024, 52428800); // front == bucket
   for (const mime of ["image/png", "image/jpeg", "image/webp", "application/pdf", "video/mp4", "video/webm"]) {
     assert.ok(sql.includes(`'${mime}'`), mime);
   }
+});
+
+const mb = 1024 * 1024;
+const fake = (name: string, type: string, size: number) => new File([new Uint8Array(size)], name, { type });
+test("anexos: aceita até 50 MB exatos e recusa 50 MB + 1 byte", () => {
+  const ok = addFiles([], [fake("a.mp4", "video/mp4", 50 * mb)]);
+  assert.equal(ok.files.length, 1);
+  assert.deepEqual(ok.messages, []);
+  const big = addFiles([], [fake("b.mp4", "video/mp4", 50 * mb + 1)]);
+  assert.equal(big.files.length, 0);
+  assert.match(big.messages[0], /passa de 50 MB/);
+});
+test("anexos: recusa tipo proibido e arquivo vazio; limita a 5 arquivos", () => {
+  const r = addFiles([], [fake("x.exe", "application/x-msdownload", 10), fake("v.png", "image/png", 0)]);
+  assert.equal(r.files.length, 0);
+  assert.equal(r.messages.length, 2);
+  const six = Array.from({ length: 6 }, (_, i) => fake(`${i}.png`, "image/png", 10));
+  const r2 = addFiles([], six);
+  assert.equal(r2.files.length, 5);
+  assert.match(r2.messages[0], /No máximo 5/);
+});
+test("anexos: addFiles não altera a lista original", () => {
+  const cur = [fake("a.png", "image/png", 5)];
+  addFiles(cur, [fake("b.png", "image/png", 5)]);
+  assert.equal(cur.length, 1);
+});
+test("print colado: nome genérico vira print-AAAAMMDD-HHMMSS; nome real é preservado", () => {
+  const d = new Date(2026, 10, 22, 14, 30, 5);
+  assert.equal(pastedName(fake("image.png", "image/png", 5), 0, d), "print-20261122-143005.png");
+  assert.equal(pastedName(fake("image.png", "image/png", 5), 1, d), "print-20261122-143005-2.png");
+  assert.equal(pastedName(fake("", "image/jpeg", 5), 0, d), "print-20261122-143005.jpg");
+  assert.equal(pastedName(fake("relatorio.png", "image/png", 5), 0, d), "relatorio.png");
+});
+test("filesFromClipboard: lê imagens da área de transferência e ignora texto puro", () => {
+  const d = new Date(2026, 0, 2, 3, 4, 5);
+  const got = filesFromClipboard({ files: [fake("image.png", "image/png", 5)], items: [] } as unknown as DataTransfer, d);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].name, "print-20260102-030405.png");
+  assert.equal(got[0].type, "image/png");
+  assert.equal(filesFromClipboard({ files: [], items: [{ kind: "string" }] } as unknown as DataTransfer).length, 0);
+  assert.equal(filesFromClipboard(null).length, 0);
 });
 
 console.log(`\n${n} testes unitários passaram`);

@@ -42,7 +42,7 @@ await esbuild.build({
     "process.env.NODE_ENV": '"development"',
   },
 });
-writeFileSync(resolve(OUT, "index.html"), `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>`);
+writeFileSync(resolve(OUT, "index.html"), `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${/<title>(.*?)<\/title>/.exec(read("index.html"))?.[1] ?? ""}</title><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>`);
 console.log("✓ site compilado com esbuild");
 
 // ───────── 2. banco ─────────
@@ -168,15 +168,59 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await visitor.setInputFiles("#files", { name: "print da tela.png", mimeType: "image/png", buffer: PNG });
     await visitor.waitForSelector("li:has-text('print da tela.png')");
   });
+  await step("anexos: arquivo acima de 50 MB é recusado", async () => {
+    const big = resolve(OUT, "video-grande.mp4");
+    writeFileSync(big, Buffer.alloc(51 * 1024 * 1024, 1));
+    await visitor.setInputFiles("#files", big);
+    await visitor.waitForSelector("text=passa de 50 MB");
+    assert.equal(await visitor.locator("li:has-text('video-grande.mp4')").count(), 0);
+  });
+  await step("anexos: Ctrl+V cola um print (vira print-AAAAMMDD-HHMMSS.png, com miniatura)", async () => {
+    await visitor.evaluate((b64: string) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "image.png", { type: "image/png" }));
+      document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, PNG.toString("base64"));
+    await visitor.waitForSelector("li:has-text('print-')");
+    assert.match((await visitor.textContent("li:has-text('print-') .fname")) ?? "", /print-\d{8}-\d{6}\.png/);
+    assert.equal(await visitor.locator("li:has-text('print-') img.thumb").count(), 1);
+    await visitor.waitForSelector("text=Imagem colada.");
+  });
+  await step("Ctrl+V de TEXTO na descrição continua colando texto (não vira anexo)", async () => {
+    const before = await visitor.locator(".files li").count();
+    await visitor.focus("#desc");
+    await visitor.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", "texto colado");
+      const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+      document.querySelector("#desc")!.dispatchEvent(ev);
+      (window as any).__prevented = ev.defaultPrevented;
+    });
+    assert.equal(await visitor.evaluate(() => (window as any).__prevented), false);
+    assert.equal(await visitor.locator(".files li").count(), before);
+  });
+  await step("anexos: arrastar e soltar na área de anexos", async () => {
+    const before = await visitor.locator(".files li").count();
+    await visitor.evaluate((b64: string) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "arrastado.png", { type: "image/png" }));
+      document.querySelector(".dropzone")!.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }, PNG.toString("base64"));
+    await visitor.waitForSelector("li:has-text('arrastado.png')");
+    await visitor.click("li:has-text('arrastado.png') button:has-text('remover')");
+    assert.equal(await visitor.locator(".files li").count(), before);
+  });
   await step("envia e recebe o protocolo", async () => {
     await visitor.click("button:has-text('Enviar solicitação')");
-    await visitor.waitForSelector("h1:has-text('Solicitação enviada!')");
+    await visitor.waitForSelector("h2:has-text('Solicitação enviada!')");
     const proto = (await visitor.textContent(".protocol")) ?? "";
     assert.match(proto, /^CON-\d{4}-0001$/);
   });
   await step("acompanhamento: título e etapa atual 'Recebido'", async () => {
     await visitor.click("button:has-text('Acompanhar solicitação')");
-    await visitor.waitForSelector(`h1:has-text('${TITLE}')`);
+    await visitor.waitForSelector(`h2:has-text('${TITLE}')`);
     const cur = await visitor.textContent("li[aria-current=step]");
     assert.match(cur ?? "", /Recebido/);
     tracking = (await visitor.url()).split("/acompanhar/")[1];
@@ -186,7 +230,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   });
   await step("link inválido mostra 'não encontrada'", async () => {
     await visitor.goto(`${BASE}/#/acompanhar/${"0".repeat(48)}`);
-    await visitor.waitForSelector("h1:has-text('Solicitação não encontrada')");
+    await visitor.waitForSelector("h2:has-text('Solicitação não encontrada')");
   });
   await step("'minha clínica não está na lista' gera pedido com clínica pendente", async () => {
     await visitor.goto(`${BASE}/#/solicitar`);
@@ -201,15 +245,38 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await visitor.fill("#title", "Adicionar Marcas");
     await visitor.fill("#desc", "Solicito adicionar na aba de adicionar um produto a opção de marca.");
     await visitor.click("button:has-text('Enviar solicitação')");
-    await visitor.waitForSelector("h1:has-text('Solicitação enviada!')");
+    await visitor.waitForSelector("h2:has-text('Solicitação enviada!')");
     assert.match((await visitor.textContent(".protocol")) ?? "", /-0002$/);
+  });
+
+  await step("abas: Solicitação / Acompanhar / Acesso da equipe", async () => {
+    await visitor.goto(`${BASE}/#/solicitar`);
+    await visitor.waitForSelector("a.site-tab.on:has-text('Solicitação de funcionalidade')");
+    await visitor.click("a.site-tab:has-text('Acompanhar sua solicitação')");
+    await visitor.waitForSelector("h1:has-text('Acompanhar sua solicitação')");
+    await visitor.waitForSelector("a.site-tab.on:has-text('Acompanhar sua solicitação')");
+    await visitor.fill("#track-link", "isso não é um link");
+    await visitor.click("button:has-text('Acompanhar')");
+    await visitor.waitForSelector("text=Link inválido");
+    await visitor.fill("#track-link", `${BASE}/#/acompanhar/${tracking}`);
+    await visitor.click("form button:has-text('Acompanhar')");
+    await visitor.waitForSelector(`h2:has-text('${TITLE}')`);
+    await visitor.waitForSelector("a.site-tab.on:has-text('Acompanhar sua solicitação')");
+    await snap(visitor, "07-acompanhar");
+    await visitor.click("a.site-tab:has-text('Acesso da equipe')");
+    await visitor.waitForSelector("h1:has-text('Acesso da equipe')");
+    await visitor.waitForSelector("a.site-tab.on:has-text('Acesso da equipe')");
+    await visitor.click("a.site-tab:has-text('Solicitação de funcionalidade')");
+    await visitor.waitForSelector("h1:has-text('Solicitação de funcionalidade')");
+    assert.ok((await visitor.title()).includes("Conceive"));
+    assert.ok(!(await visitor.content()).includes("ConceIve"));
   });
 
   console.log("equipe — PO");
   po = await newPage();
   await step("/admin sem login redireciona para o login", async () => {
     await po.goto(`${BASE}/#/admin`);
-    await po.waitForSelector("h1:has-text('Painel ConceIve')");
+    await po.waitForSelector("h1:has-text('Acesso da equipe')");
     assert.match(po.url(), /#\/login/);
   });
   await step("login inválido mostra erro genérico", async () => {
@@ -248,6 +315,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await po.click(`td:has-text('${TITLE}')`);
     await po.waitForSelector("[role=dialog] >> text=Definimos que iremos");
     assert.ok(await po.isVisible("[role=dialog] >> text=print_da_tela.png"), "anexo listado com nome saneado");
+    assert.ok(await po.isVisible("[role=dialog] >> text=/print-\\d{8}-\\d{6}\\.png/"), "print colado chegou como anexo");
     await po.selectOption("#st", "EM_ANALISE_PRODUTO");
     await po.waitForFunction(() => (document.querySelector("#st") as HTMLSelectElement | null)?.value === "EM_ANALISE_PRODUTO");
   });
@@ -331,7 +399,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   });
   await step("sair e entrar de novo: pede só o código (código errado é recusado)", async () => {
     await po.click("button:has-text('Sair')");
-    await po.waitForSelector("h1:has-text('Painel ConceIve')");
+    await po.waitForSelector("h1:has-text('Acesso da equipe')");
     await login(po, "po@x.com", { firstTime: false, wrongCodeFirst: true });
   });
   await step("arquivar some da lista", async () => {

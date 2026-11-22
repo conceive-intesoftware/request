@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ensureSession, hasSession, listUnits, searchClinics, submitRequest } from "../lib/api";
 import { TURNSTILE_SITE_KEY } from "../lib/supabase";
-import { ALLOWED_MIME, MAX_FILES, MAX_FILE_MB, MODULES, REQUESTER_ROLES, TYPES } from "../lib/labels";
+import { MODULES, REQUESTER_ROLES, TYPES } from "../lib/labels";
 import { maskPhoneInput } from "../lib/phone";
 import { validateRequestForm, type FormErrors, type RequestFormValues } from "../lib/validate";
-import { errMsg, extractToken, fmtBytes } from "../lib/format";
-import { Link, navigate } from "../lib/router";
+import { errMsg } from "../lib/format";
+import { navigate } from "../lib/router";
 import { Banner, Field, Select, Spinner } from "../components/ui";
 import { Turnstile } from "../components/Turnstile";
+import { AttachmentPicker } from "../components/AttachmentPicker";
+import { PublicShell } from "../components/PublicShell";
 
 const EMPTY: RequestFormValues = {
   mode: "pick",
@@ -34,7 +36,7 @@ export default function Solicitar() {
   const [submitting, setSubmitting] = useState(false);
   const [honeypot, setHoneypot] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [fileMsg, setFileMsg] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [done, setDone] = useState<{ protocol: string; token: string } | null>(null);
 
   // autocomplete
@@ -123,25 +125,6 @@ export default function Solicitar() {
     setUnits([]);
   }
 
-  function onFiles(list: FileList | null) {
-    if (!list) return;
-    setFileMsg(null);
-    const next = [...files];
-    for (const f of Array.from(list)) {
-      if (next.length >= MAX_FILES) return setFileMsg(`No máximo ${MAX_FILES} anexos.`);
-      if (!ALLOWED_MIME.includes(f.type)) {
-        setFileMsg(`“${f.name}”: tipo não permitido (use PNG, JPG, WEBP, PDF, MP4 ou WEBM).`);
-        continue;
-      }
-      if (f.size > MAX_FILE_MB * 1024 * 1024) {
-        setFileMsg(`“${f.name}” passa de ${MAX_FILE_MB} MB.`);
-        continue;
-      }
-      next.push(f);
-    }
-    setFiles(next);
-  }
-
   const canSubmit = phase === "ready" && !submitting;
 
   async function onSubmit(e: FormEvent) {
@@ -174,6 +157,7 @@ export default function Solicitar() {
           description: v.description.trim(),
         },
         files,
+        (n, total) => setProgress(`Enviando anexo ${n} de ${total}…`),
       );
       setDone({ protocol: r.protocol, token: r.trackingToken });
       window.scrollTo({ top: 0 });
@@ -181,6 +165,7 @@ export default function Solicitar() {
       setServerError(errMsg(e2));
     } finally {
       setSubmitting(false);
+      setProgress(null);
     }
   }
 
@@ -192,9 +177,10 @@ export default function Solicitar() {
   // ───── sucesso ─────
   if (done) {
     return (
+      <PublicShell title="Solicitação de funcionalidade" subtitle="Conte o que a sua clínica precisa. Você receberá um protocolo para acompanhar o andamento.">
       <main className="page narrow">
         <div className="card success">
-          <h1>Solicitação enviada!</h1>
+          <h2>Solicitação enviada!</h2>
           <p>Seu protocolo é</p>
           <p className="protocol">{done.protocol}</p>
           {done.token ? (
@@ -225,15 +211,13 @@ export default function Solicitar() {
           ) : null}
         </div>
       </main>
+      </PublicShell>
     );
   }
 
   return (
+    <PublicShell title="Solicitação de funcionalidade" subtitle="Conte o que a sua clínica precisa. Você receberá um protocolo para acompanhar o andamento.">
     <main className="page narrow">
-      <header className="page-head">
-        <h1>Solicitação de funcionalidade</h1>
-        <p className="muted">Conte o que a sua clínica precisa. Você receberá um protocolo para acompanhar o andamento.</p>
-      </header>
 
       {phase === "checking" && <Spinner label="Preparando o formulário…" />}
       {phase === "captcha" && (
@@ -349,57 +333,19 @@ export default function Solicitar() {
           <p className="counter">{v.description.length}/8000</p>
         </Field>
 
-        <Field label={`Anexos (opcional) — prints, PDF ou vídeo curto, até ${MAX_FILE_MB} MB, máx. ${MAX_FILES}`} htmlFor="files">
-          <input id="files" type="file" multiple accept={ALLOWED_MIME.join(",")} disabled={files.length >= MAX_FILES} onChange={(e) => { onFiles(e.target.files); e.target.value = ""; }} />
-          {fileMsg && <p className="error" role="alert">{fileMsg}</p>}
-          {files.length > 0 && (
-            <ul className="files">
-              {files.map((f, i) => (
-                <li key={`${f.name}-${i}`}>
-                  <span>{f.name} <small className="muted">({fmtBytes(f.size)})</small></span>
-                  <button type="button" className="link danger" onClick={() => setFiles(files.filter((_, j) => j !== i))}>
-                    remover
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Field label="Anexos (opcional)" htmlFor="files">
+          <AttachmentPicker files={files} onChange={setFiles} disabled={phase !== "ready" || submitting} />
         </Field>
 
         <button type="submit" className="btn btn-primary btn-block" disabled={!canSubmit}>
-          {submitting ? "Enviando…" : "Enviar solicitação"}
+          {submitting ? (progress ?? "Enviando…") : "Enviar solicitação"}
         </button>
         <p className="hint">
-          Ao enviar, você autoriza a ConceIve a usar seu nome e WhatsApp apenas para dar retorno sobre esta solicitação (LGPD).
+          Ao enviar, você autoriza a Conceive a usar seu nome e WhatsApp apenas para dar retorno sobre esta solicitação (LGPD).
         </p>
       </form>
 
-      <TrackBox />
     </main>
-  );
-}
-
-function TrackBox() {
-  const [val, setVal] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  return (
-    <section className="card track">
-      <h2>Já enviou uma solicitação?</h2>
-      <p className="muted">Cole o link de acompanhamento que você recebeu.</p>
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const t = extractToken(val);
-          if (!t) return setErr("Link inválido. Cole o link completo recebido após o envio.");
-          navigate(`/acompanhar/${t}`);
-        }}
-      >
-        <input className="input" value={val} onChange={(e) => { setVal(e.target.value); setErr(null); }} placeholder="https://…#/acompanhar/…" aria-label="Link de acompanhamento" />
-        <button className="btn" type="submit">Acompanhar</button>
-      </form>
-      {err && <p className="error" role="alert">{err}</p>}
-      <p className="muted small"><Link to="/login">Acesso da equipe</Link></p>
-    </section>
+    </PublicShell>
   );
 }

@@ -116,7 +116,8 @@ const base = {
   });
   await step("anexo com tipo proibido ou grande demais é recusado antes de criar a solicitação", async () => {
     await rejects(api.submitRequest(base, [{ name: "virus.exe", type: "application/x-msdownload", size: 10 }]), /anexo/i);
-    await rejects(api.submitRequest(base, [{ name: "enorme.mp4", type: "video/mp4", size: 30 * 1024 * 1024 }]), /anexo/i);
+    await rejects(api.submitRequest(base, [{ name: "enorme.mp4", type: "video/mp4", size: 50 * 1024 * 1024 + 1 }]), /anexo/i);
+    assert.equal(db.sql(`select file_size_limit from storage.buckets where id = 'attachments'`).trim(), "52428800", "bucket aceita até 50 MB");
     const total = db.sql(`select count(*) from public.requests`).trim();
     assert.equal(total, "1", "nenhuma solicitação extra criada");
   });

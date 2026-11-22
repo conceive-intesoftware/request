@@ -123,7 +123,7 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
           <dt>WhatsApp</dt>
           <dd>
             {d.pii_masked ? d.whatsapp : (
-              <a href={whatsappLink(d.whatsapp, `Olá! Sobre sua solicitação ${d.protocol} no ConceIve…`)} target="_blank" rel="noopener noreferrer">{formatPhoneBR(d.whatsapp)}</a>
+              <a href={whatsappLink(d.whatsapp, `Olá! Sobre sua solicitação ${d.protocol} no Conceive…`)} target="_blank" rel="noopener noreferrer">{formatPhoneBR(d.whatsapp)}</a>
             )}
           </dd>
         </div>

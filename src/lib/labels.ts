@@ -56,5 +56,5 @@ export const labelOf = (list: readonly Opt[], value: string | null | undefined):
   list.find(([k]) => k === value)?.[1] ?? value ?? "—";
 
 export const ALLOWED_MIME = ["image/png", "image/jpeg", "image/webp", "application/pdf", "video/mp4", "video/webm"];
-export const MAX_FILE_MB = 25;
+export const MAX_FILE_MB = 50;
 export const MAX_FILES = 5;

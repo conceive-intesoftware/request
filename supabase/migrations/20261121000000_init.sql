@@ -1,5 +1,5 @@
 -- =====================================================================
--- ConceIve Requests — migração inicial para Supabase
+-- Conceive Requests — migração inicial para Supabase
 -- Cole TODO este arquivo no SQL Editor do Supabase e clique em "Run".
 -- É idempotente (pode rodar de novo sem quebrar), exceto pelo bootstrap do 1º admin.
 --
@@ -388,7 +388,7 @@ create policy audit_read on public.audit_logs for select to authenticated
 -- 7. Storage (anexos)
 -- ---------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('attachments', 'attachments', false, 26214400,
+values ('attachments', 'attachments', false, 52428800,
         array['image/png','image/jpeg','image/webp','application/pdf','video/mp4','video/webm'])
 on conflict (id) do update
   set public = false,

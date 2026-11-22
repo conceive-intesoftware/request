@@ -1,4 +1,4 @@
-# ConceIve Requests
+# Conceive Requests
 
 Sistema de solicitações de funcionalidades e melhorias (substitui Google Forms + Sheets).
 **Site estático** (GitHub Pages) + **Supabase** (Postgres, Auth, Storage). Sem servidor próprio.
@@ -12,7 +12,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
         │                                                │
         ▼                                                ▼
 ┌─────────────────────────────── GitHub Pages ───────────────────────────────┐
-│  React (Vite)  ·  #/solicitar  #/acompanhar/<token>  #/login  #/admin      │
+│  React (Vite)  ·  #/solicitar  #/acompanhar  #/login  #/admin      │
 └───────────────┬────────────────────────────────────────────────────────────┘
                 │ supabase-js (chave pública) — só chama funções RPC
                 ▼
@@ -20,7 +20,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 │ Auth: sessão anônima (cliente) + senha/MFA TOTP (equipe)  · Turnstile      │
 │ Postgres: RPCs SECURITY DEFINER ──► checam permissão ──► mascaram PII ──►  │
 │           gravam auditoria; RLS; triggers; audit_logs imutável             │
-│ Storage: bucket privado "attachments" (25 MB, só tipos permitidos)         │
+│ Storage: bucket privado "attachments" (50 MB, só tipos permitidos)         │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,6 +44,7 @@ supabase/seed_clinics.sql        (opcional) clínicas iniciais
 supabase/cleanup_anonymous_users.sql   Manutenção mensal
 supabase/tests/                  Mock do Supabase + suíte de testes do banco
 src/lib/                         api.ts (RPCs), validação, telefone, CSV, auth, roteador
+src/components/                  PublicShell (cabeçalho com abas), AttachmentPicker (Ctrl+V, arrastar, escolher)
 src/pages/                       Solicitar, Acompanhar, Login, admin/ (Dashboard, Kanban, Detalhe, Auditoria, Clínicas, Equipe)
 tests/                           unit · contract · e2e (Chromium)
 .github/workflows/               deploy.yml (Pages) · tests.yml (CI com Postgres)

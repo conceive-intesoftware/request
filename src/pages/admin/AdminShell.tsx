@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { AuthState } from "../../lib/useAuth";
 import { Link, navigate, useRoute } from "../../lib/router";
 import { Banner, Spinner } from "../../components/ui";
+import { Logo } from "../../components/PublicShell";
 import Dashboard from "./Dashboard";
 import { Clinics, Team } from "./Manage";
 
@@ -41,7 +42,7 @@ export default function AdminShell({ auth }: { auth: AuthState }) {
   return (
     <div className="shell">
       <header className="topbar">
-        <strong className="brand">ConceIve · Solicitações</strong>
+        <span className="admin-brand"><Logo size={28} /><span><strong>Conceive</strong><small>Painel da equipe</small></span></span>
         <nav>
           <Link to="/admin" className={route === "/admin" ? "on" : ""}>Solicitações</Link>
           {can("clinic:manage") && <Link to="/admin/clinicas" className={route === "/admin/clinicas" ? "on" : ""}>Clínicas</Link>}

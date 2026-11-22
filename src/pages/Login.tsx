@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { client, logLogin, myContext } from "../lib/api";
 import { TURNSTILE_SITE_KEY } from "../lib/supabase";
 import { errMsg } from "../lib/format";
-import { Link, navigate } from "../lib/router";
+import { navigate } from "../lib/router";
+import { PublicShell } from "../components/PublicShell";
 import { Banner, Field } from "../components/ui";
 import { Turnstile } from "../components/Turnstile";
 
@@ -62,7 +63,7 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
       for (const x of f?.all ?? []) {
         if (x.factor_type === "totp" && x.status === "unverified") await c.auth.mfa.unenroll({ factorId: x.id });
       }
-      const { data: en, error: enErr } = await c.auth.mfa.enroll({ factorType: "totp", friendlyName: "ConceIve" });
+      const { data: en, error: enErr } = await c.auth.mfa.enroll({ factorType: "totp", friendlyName: "Conceive" });
       if (enErr || !en) throw new Error("Não foi possível iniciar o cadastro do autenticador.");
       setFactorId(en.id);
       setQr(en.totp.qr_code);
@@ -93,9 +94,10 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
   }
 
   return (
+    <PublicShell title="Acesso da equipe" subtitle="Painel interno de gestão das solicitações. Acesso restrito, com autenticação em dois fatores.">
     <main className="page tiny">
-      <h1>Painel ConceIve</h1>
-      <p className="muted">Acesso restrito à equipe. Autenticação em dois fatores obrigatória.</p>
+      <div className="card login-card">
+      <h2>Entrar no painel</h2>
       {error && <Banner>{error}</Banner>}
 
       {step === "credentials" && (
@@ -132,7 +134,8 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
         </form>
       )}
 
-      <p className="muted small"><Link to="/solicitar">← Voltar ao formulário de solicitações</Link></p>
+      </div>
     </main>
+    </PublicShell>
   );
 }

@@ -97,6 +97,7 @@ const safeName = (n: string) =>
 export async function submitRequest(
   input: SubmitInput,
   files: UploadableFile[] = [],
+  onProgress?: (done: number, total: number) => void,
 ): Promise<{ protocol: string; trackingToken: string }> {
   const c = client();
   const { data: s } = await c.auth.getSession();
@@ -104,13 +105,14 @@ export async function submitRequest(
   const uid = s.session.user.id;
 
   const paths: string[] = [];
-  for (const f of files) {
+  for (const [i, f] of files.entries()) {
+    onProgress?.(i + 1, files.length);
     const path = `${uid}/${crypto.randomUUID()}__${safeName(f.name)}`;
     const { error } = await c.storage.from("attachments").upload(path, f as unknown as File, {
       contentType: f.type,
       upsert: false,
     });
-    if (error) throw new ApiError(`Falha ao enviar o anexo “${f.name}”. Verifique o tipo e o tamanho (máx. 25 MB).`, error.message);
+    if (error) throw new ApiError(`Falha ao enviar o anexo “${f.name}”. Verifique o tipo e o tamanho (máx. 50 MB).`, error.message);
     paths.push(path);
   }
 

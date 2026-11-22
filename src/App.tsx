@@ -16,6 +16,7 @@ export default function App() {
 
   const track = match(route, "/acompanhar/:token");
   if (track) return <Acompanhar token={track.token} />;
+  if (route === "/acompanhar") return <Acompanhar />;
   if (route === "/login") return <Login onDone={auth.reload} />;
   if (route === "/admin" || route.startsWith("/admin/")) return <AdminShell auth={auth} />;
   return <Solicitar />;

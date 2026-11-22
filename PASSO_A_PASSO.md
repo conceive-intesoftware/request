@@ -21,6 +21,10 @@ Ordem: primeiro o Supabase (banco), depois o GitHub (site). Não pule a Parte 1,
 4. O Supabase pode perguntar sobre "destrutive operations" (o script contém `drop trigger/policy if exists` e `revoke`). É esperado: confirme com **Run this query**.
 5. Resultado esperado: `Success. No rows returned`.
 
+> **Já rodou a versão anterior?** Rode este arquivo **inteiro de novo**: ele atualiza o limite de anexos para 50 MB sem apagar nenhum dado.
+>
+> **Anexos de 50 MB:** o limite do bucket já está em 50 MB. O Supabase também tem um limite global (menu **Storage → Settings → Upload file size limit**). Se um vídeo grande for recusado mesmo assim, confira esse valor (o plano gratuito costuma permitir no máximo 50 MB). Não consegui testar o envio de arquivos grandes contra o Supabase real.
+
 > O script é seguro para rodar de novo. Se algum dia der erro de “function not found” no site, rode `notify pgrst, 'reload schema';` no SQL Editor.
 
 ### 1.3 (Opcional) Cadastrar as clínicas iniciais
@@ -87,7 +91,7 @@ No terminal, dentro da pasta do projeto:
 ```bash
 git init -b main
 git add .
-git commit -m "ConceIve Requests"
+git commit -m "Conceive Requests"
 git remote add origin https://github.com/SEUUSUARIO/conceive-requests.git
 git push -u origin main
 ```
@@ -106,9 +110,9 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 
 ## Parte 3 — Primeiro acesso e teste
 
-1. **Formulário dos clientes:** `https://SEUUSUARIO.github.io/conceive-requests/` (abre direto no formulário). É este link que você passa para as clínicas.
-2. Envie uma solicitação de teste: o protocolo `CON-AAAA-0001` aparece com o link de acompanhamento.
-3. **Painel da equipe:** adicione `#/login` ao endereço (ou use o link “Acesso da equipe” no rodapé do formulário).
+1. **Site:** `https://SEUUSUARIO.github.io/conceive-requests/`. Tem três abas no topo: **Solicitação de funcionalidade** (abre direto, é o link que você passa para as clínicas), **Acompanhar sua solicitação** e **Acesso da equipe**.
+2. Envie uma solicitação de teste. Nos anexos dá para **escolher arquivos, arrastar, ou colar um print com Ctrl + V** (por exemplo, depois de `Win + Shift + S`); cada arquivo pode ter até 50 MB: o protocolo `CON-AAAA-0001` aparece com o link de acompanhamento.
+3. **Painel da equipe:** clique na aba **Acesso da equipe** (ou adicione `#/login` ao endereço).
    - Entre com o e-mail e a senha do passo 1.5.
    - No **primeiro acesso** aparece um QR code: leia com Google Authenticator, Authy ou 1Password e digite o código de 6 dígitos. Nos próximos acessos basta o código.
 4. Você deve ver a solicitação de teste na lista. Teste: abrir, mudar status, comentar com “Resposta pública” e conferir no link de acompanhamento.
@@ -149,6 +153,8 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 | Login: “Sua conta ainda não foi cadastrada na equipe” | Falta o passo 1.5 (item 3) ou a liberação na tela Equipe. |
 | Login: “Código inválido” | Hora do celular errada (ative hora automática) ou código expirado: use o próximo. |
 | Painel diz “Autenticação em dois fatores pendente” | Saia e entre de novo, concluindo o código do autenticador. |
+| Vídeo/imagem grande recusado | O limite é 50 MB por arquivo e 5 por solicitação. Se ainda falhar com menos de 50 MB, veja o limite global em Storage → Settings. |
+| Ctrl + V não cola o print | Clique em qualquer área da página (fora de uma caixa de texto) e tente de novo, ou use o botão **Colar imagem**. Só imagens PNG/JPG/WEBP são aceitas. |
 | Erro “Could not find the function …” | Rode `notify pgrst, 'reload schema';` no SQL Editor. |
 | Tela em branco em endereço antigo | Abra a raiz do site; o site usa endereços com `#/` e funciona em qualquer subcaminho. |
 
@@ -161,12 +167,12 @@ Testado neste ambiente, **contra um PostgreSQL 16 real**, simulando o Supabase (
 - **191 verificações no banco**: permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração.
 - **9 verificações** nos scripts auxiliares (admin, clínicas, limpeza).
 - **26 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
-- **16 testes unitários**: telefone, validação, CSV seguro, e comparação automática dos enums e DDDs do site com os do SQL.
-- **31 verificações de ponta a ponta em navegador real (Chromium)**: cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe.
+- **21 testes unitários**: telefone, validação, CSV seguro, anexos (limite de 50 MB exato, nome do print colado) e comparação automática dos enums e DDDs do site com os do SQL.
+- **36 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe.
 
 **Não foi possível testar aqui** (exige internet e as suas contas):
 - O `npm install` + `vite build` reais (o ambiente não tinha rede): validei a compilação com esbuild e os tipos com declarações simplificadas. O primeiro *build* no GitHub é o teste final; se acusar algum erro de tipo, ele aparece no log da aba Actions.
-- A comunicação com o Supabase de verdade (substituída por um banco local equivalente), o widget do Turnstile e o envio real de arquivos ao Storage.
+- A comunicação com o Supabase de verdade (substituída por um banco local equivalente), o widget do Turnstile e o envio real de arquivos ao Storage (inclusive o de 50 MB). O Ctrl + V foi testado com o evento de colar simulado, não com a área de transferência real do Windows.
 - A tela do GitHub Pages e do painel do Supabase: os nomes dos menus acima seguem a documentação oficial, mas podem mudar de lugar.
 
 ## Limites conhecidos

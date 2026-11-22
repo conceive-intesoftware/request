@@ -611,7 +611,7 @@ begin
   perform tests.login('a0000000-0000-0000-0000-000000000004', 'aal1');
   select count(*) into v_n from storage.objects; perform tests.ok(v_n = 0, 'equipe sem MFA NÃO lê anexos');
   perform tests.logout();
-  perform tests.ok((select not public and file_size_limit = 26214400 from storage.buckets where id = 'attachments'), 'bucket privado com limite de 25 MB');
+  perform tests.ok((select not public and file_size_limit = 52428800 from storage.buckets where id = 'attachments'), 'bucket privado com limite de 50 MB');
   perform tests.ok((select allowed_mime_types @> array['image/png','application/pdf','video/mp4'] and not allowed_mime_types @> array['text/html'] from storage.buckets where id = 'attachments'), 'bucket só aceita tipos permitidos');
 end $t$;
 
