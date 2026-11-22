@@ -1,0 +1,140 @@
+// Testes unitários e checagens cruzadas front ↔ migração SQL.  Rodar: npm run test:unit
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DDD_VALIDOS, formatPhoneBR, maskPhoneInput, normalizeBrPhone, whatsappLink } from "../src/lib/phone";
+import { toCsv } from "../src/lib/csv";
+import { validateRequestForm, type RequestFormValues } from "../src/lib/validate";
+import { MODULES, PRIORITIES, REQUESTER_ROLES, STATUSES, STAFF_ROLES, TYPES, labelOf } from "../src/lib/labels";
+import { friendlyMessage } from "../src/lib/api";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const sql = readFileSync(resolve(root, "supabase/migrations/20261121000000_init.sql"), "utf8");
+
+let n = 0;
+function test(name: string, fn: () => void) {
+  try {
+    fn();
+    n++;
+    console.log(`  ✓ ${name}`);
+  } catch (e) {
+    console.error(`  ✗ ${name}\n`, e);
+    process.exit(1);
+  }
+}
+
+console.log("telefone");
+test("normaliza formatos reais da planilha", () => {
+  assert.equal(normalizeBrPhone("84998493000"), "+5584998493000");
+  assert.equal(normalizeBrPhone("84 987417184"), "+5584987417184");
+  assert.equal(normalizeBrPhone("(84) 99849-3000"), "+5584998493000");
+  assert.equal(normalizeBrPhone("+55 (84) 99849-3000"), "+5584998493000");
+  assert.equal(normalizeBrPhone("5584998493000"), "+5584998493000");
+  assert.equal(normalizeBrPhone("(84) 3211-4455"), "+558432114455");
+});
+test("rejeita inválidos", () => {
+  for (const bad of ["", "123", "(10) 99999-9999", "(84) 89999-9999", "abc", "84 9984930001"]) {
+    assert.equal(normalizeBrPhone(bad), null, bad);
+  }
+});
+test("DDD 55 (RS) com 11 dígitos não é confundido com DDI", () => {
+  assert.equal(normalizeBrPhone("55999999999"), "+5555999999999");
+});
+test("máscara progressiva", () => {
+  assert.equal(maskPhoneInput(""), "");
+  assert.equal(maskPhoneInput("8"), "(8");
+  assert.equal(maskPhoneInput("84"), "(84");
+  assert.equal(maskPhoneInput("849"), "(84) 9");
+  assert.equal(maskPhoneInput("84998"), "(84) 998");
+  assert.equal(maskPhoneInput("8499849"), "(84) 9984-9");
+  assert.equal(maskPhoneInput("84998493000"), "(84) 99849-3000");
+  assert.equal(maskPhoneInput("(84) 99849-3000999"), "(84) 99849-3000");
+});
+test("formatPhoneBR e whatsappLink", () => {
+  assert.equal(formatPhoneBR("+5584998493000"), "(84) 99849-3000");
+  assert.equal(whatsappLink("+5584998493000"), "https://wa.me/5584998493000");
+  assert.equal(whatsappLink("+5584998493000", "Olá & tudo"), "https://wa.me/5584998493000?text=Ol%C3%A1%20%26%20tudo");
+});
+
+console.log("validação do formulário");
+const ok: RequestFormValues = {
+  mode: "pick",
+  clinicId: "c1",
+  pendingClinicName: "",
+  unitId: "",
+  requesterName: "Sarah Silva",
+  requesterRole: "ADMINISTRADOR",
+  whatsapp: "(84) 99849-3000",
+  module: "FINANCEIRO",
+  type: "MELHORIA_FLUXO",
+  title: "Pagamento antecipado",
+  description: "Descrição detalhada o bastante para passar.",
+};
+test("formulário válido não tem erros", () => assert.deepEqual(validateRequestForm(ok), {}));
+test("detecta cada campo inválido", () => {
+  const e = validateRequestForm({
+    ...ok, clinicId: "", requesterName: "Al", requesterRole: "X", whatsapp: "1", module: "", type: "", title: "abc", description: "curta",
+  });
+  assert.deepEqual(Object.keys(e).sort(), ["clinicId", "description", "module", "requesterName", "requesterRole", "title", "type", "whatsapp"]);
+});
+test("modo 'clínica nova' exige nome", () => {
+  assert.ok(validateRequestForm({ ...ok, mode: "new", clinicId: "", pendingClinicName: "ab" }).pendingClinicName);
+  assert.deepEqual(validateRequestForm({ ...ok, mode: "new", clinicId: "", pendingClinicName: "Clínica Nova" }), {});
+});
+
+console.log("CSV");
+test("escapa aspas e protege contra fórmulas", () => {
+  const csv = toCsv([{ a: 'diz "oi"', b: "=HYPERLINK(\"x\")", c: "+1", d: "-2", e: "@x", f: null, g: 5 }]);
+  const [h, row] = csv.split("\r\n");
+  assert.equal(h, "a,b,c,d,e,f,g");
+  assert.equal(row, `"diz ""oi""","'=HYPERLINK(""x"")","'+1","'-2","'@x","","5"`);
+});
+test("lista vazia => string vazia", () => assert.equal(toCsv([]), ""));
+test("respeita a ordem de colunas informada", () => {
+  assert.equal(toCsv([{ b: 1, a: 2, z: 3 }], ["a", "b"]), `a,b\r\n"2","1"`);
+});
+
+console.log("mensagens de erro");
+test("traduz erros do banco", () => {
+  assert.match(friendlyMessage("rate_limited"), /Muitas/);
+  assert.match(friendlyMessage("forbidden: request:update_status"), /permissão/);
+  assert.match(friendlyMessage("user_not_found"), /Authentication/);
+  assert.match(friendlyMessage('duplicate key value violates unique constraint "clinics_name_uq"'), /Já existe/);
+  assert.match(friendlyMessage("algo inesperado xyz"), /Não foi possível/);
+});
+
+console.log("front ↔ migração SQL");
+function sqlEnum(name: string): string[] {
+  const m = sql.match(new RegExp(`create type public\\.${name} as enum \\(([^)]*)\\)`));
+  assert.ok(m, `enum ${name} não encontrado no SQL`);
+  return [...m![1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+}
+const vals = (l: readonly (readonly [string, string])[]) => l.map(([k]) => k);
+test("enums do front == enums do banco", () => {
+  assert.deepEqual(vals(REQUESTER_ROLES), sqlEnum("requester_role"));
+  assert.deepEqual(vals(MODULES), sqlEnum("system_module"));
+  assert.deepEqual(vals(TYPES), sqlEnum("request_type"));
+  assert.deepEqual(vals(STATUSES), sqlEnum("request_status"));
+  assert.deepEqual(vals(PRIORITIES), sqlEnum("priority_level"));
+  assert.deepEqual(vals(STAFF_ROLES), sqlEnum("app_role"));
+});
+test("DDDs do front == DDDs do banco", () => {
+  const m = sql.match(/= any \(array\[([\s\S]*?)\]\)\) then/);
+  assert.ok(m, "lista de DDD não encontrada no SQL");
+  const sqlDdd = m![1].split(",").map((s) => Number(s.trim())).filter(Boolean);
+  assert.deepEqual([...DDD_VALIDOS].sort((a, b) => a - b), [...sqlDdd].sort((a, b) => a - b));
+});
+test("labelOf", () => {
+  assert.equal(labelOf(STATUSES, "EM_ANALISE_PRODUTO"), "Em análise de produto");
+  assert.equal(labelOf(STATUSES, "XYZ"), "XYZ");
+  assert.equal(labelOf(STATUSES, null), "—");
+});
+test("anexos: limites do front == limites do bucket", () => {
+  assert.match(sql, /26214400/); // 25 MB
+  for (const mime of ["image/png", "image/jpeg", "image/webp", "application/pdf", "video/mp4", "video/webm"]) {
+    assert.ok(sql.includes(`'${mime}'`), mime);
+  }
+});
+
+console.log(`\n${n} testes unitários passaram`);
