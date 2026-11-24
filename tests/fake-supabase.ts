@@ -49,6 +49,7 @@ export class Db {
 const lit = (v: unknown): string => {
   if (v === null || v === undefined) return "null";
   if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v) && v.some((e) => e !== null && typeof e === "object")) return `'${JSON.stringify(v).replace(/'/g, "''")}'`; // jsonb (array de objetos)
   if (Array.isArray(v)) {
     if (v.length === 0) return "'{}'";
     const els = v.map((e) => `"${String(e).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",");

@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import { Link, useRoute } from "../lib/router";
+import { ThemeToggle } from "./ThemeToggle";
 
 const TABS = [
   { to: "/solicitar", label: "Solicitação de funcionalidade", on: (r: string) => r === "/solicitar" || r === "/" },
   { to: "/acompanhar", label: "Acompanhar sua solicitação", on: (r: string) => r.startsWith("/acompanhar") },
+  { to: "/comunidade", label: "Roadmap e votação", on: (r: string) => r === "/comunidade" },
   { to: "/login", label: "Acesso da equipe", on: (r: string) => r === "/login", staff: true },
 ];
 
@@ -28,6 +30,7 @@ export function PublicShell({ title, subtitle, children }: { title: string; subt
   const route = useRoute();
   return (
     <div className="public">
+      <a className="skip-link" href="#conteudo" onClick={(e) => { e.preventDefault(); document.getElementById("conteudo")?.focus(); }}>Pular para o conteúdo</a>
       <header className="site-header">
         <div className="site-header-in">
           <Link to="/solicitar" className="site-brand" aria-label="Conceive — início">
@@ -44,6 +47,7 @@ export function PublicShell({ title, subtitle, children }: { title: string; subt
               </Link>
             ))}
           </nav>
+          <ThemeToggle />
         </div>
       </header>
 
@@ -54,7 +58,7 @@ export function PublicShell({ title, subtitle, children }: { title: string; subt
         </div>
       </section>
 
-      {children}
+      <div id="conteudo" tabIndex={-1} className="content-anchor">{children}</div>
 
       <footer className="site-footer">
         <span>© {new Date().getFullYear()} Conceive · Central de Solicitações</span>

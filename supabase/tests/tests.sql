@@ -101,7 +101,7 @@ do $t$ begin
   perform tests.ok(not has_table_privilege('authenticated', 'public.profiles', 'select'), 'authenticated NÃO lê profiles');
   perform tests.ok(not has_table_privilege('authenticated', 'public.audit_logs', 'update'), 'authenticated NÃO atualiza audit_logs');
   perform tests.ok(not has_function_privilege('anon', 'public.list_requests(jsonb,int,int)', 'execute'), 'anon NÃO executa list_requests');
-  perform tests.ok(not has_function_privilege('anon', 'public.submit_request(uuid,uuid,text,text,public.requester_role,text,public.system_module,public.request_type,text,text,text[])', 'execute'), 'anon sem sessão NÃO envia solicitação');
+  perform tests.ok(not has_function_privilege('anon', 'public.submit_request(uuid,uuid,text,text,public.requester_role,text,public.system_module,public.request_type,text,text,text[],text)', 'execute'), 'anon sem sessão NÃO envia solicitação');
   perform tests.ok(has_function_privilege('anon', 'public.get_request_by_token(text)', 'execute'), 'anon PODE consultar protocolo por token');
   perform tests.ok(not has_function_privilege('authenticated', 'private.filtered_requests(jsonb)', 'execute'), 'authenticated NÃO executa helper privado');
   perform tests.ok(not has_function_privilege('authenticated', 'private.write_audit(public.audit_action,text,text,jsonb,jsonb)', 'execute'), 'authenticated NÃO escreve auditoria direto');
@@ -128,9 +128,9 @@ end $t$;
 do $t$
 declare n int;
 begin
-  select count(*) into n from public.role_permissions where role = 'ADMIN';      perform tests.ok(n = 15, 'ADMIN tem 15 permissões');
-  select count(*) into n from public.role_permissions where role = 'PO';         perform tests.ok(n = 13, 'PO tem 13 permissões');
-  select count(*) into n from public.role_permissions where role = 'SUPPORT';    perform tests.ok(n = 6, 'SUPPORT tem 6 permissões');
+  select count(*) into n from public.role_permissions where role = 'ADMIN';      perform tests.ok(n = 18, 'ADMIN tem 18 permissões');
+  select count(*) into n from public.role_permissions where role = 'PO';         perform tests.ok(n = 15, 'PO tem 15 permissões');
+  select count(*) into n from public.role_permissions where role = 'SUPPORT';    perform tests.ok(n = 7, 'SUPPORT tem 7 permissões');
   select count(*) into n from public.role_permissions where role = 'DEV_VIEWER'; perform tests.ok(n = 2, 'DEV_VIEWER tem 2 permissões');
   perform tests.ok(not exists (select 1 from public.role_permissions where role = 'DEV_VIEWER' and permission = 'pii:view'), 'DEV não vê PII');
   perform tests.ok(not exists (select 1 from public.role_permissions where role = 'SUPPORT' and permission in ('request:update_status','report:export','audit:read')), 'SUPPORT não muda status/exporta/audita');
@@ -631,6 +631,474 @@ begin
   select count(*) into v_n from storage.objects where (storage.foldername(name))[1] = v_uid::text;
   perform tests.ok(v_n = 50, 'exatamente 50 arquivos gravados');
   perform tests.ok(not has_function_privilege('anon', 'private.my_upload_count()', 'execute'), 'anon não executa my_upload_count');
+end $t$;
+
+-- ───────── 23. e-mail do solicitante (v2) ─────────
+do $t$
+declare v_c uuid := gen_random_uuid(); v_tok text; v_id uuid; j jsonb; v_exp text;
+begin
+  perform tests.login(v_c, 'aal1', true);
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica Mail','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Pedido com e-mail inválido','Descrição suficientemente longa para validar.','{}','sem-arroba')$$, 'invalid_email', 'e-mail inválido é recusado');
+  select s.tracking_token into v_tok from public.submit_request(null,null,'Clínica Mail','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Pedido com e-mail válido','Descrição suficientemente longa para validar.','{}','  Fulano.Tal@Clinica.COM.br ') s;
+  perform tests.logout();
+  select id into v_id from public.requests where tracking_token = v_tok;
+  perform tests.set('id_mail', v_id::text); perform tests.set('tok_mail', v_tok);
+  perform tests.ok((select requester_email = 'fulano.tal@clinica.com.br' from public.requests where id = v_id), 'e-mail guardado em minúsculas e sem espaços');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000004', 'aal2');   -- DEV: mascarado
+  j := public.get_request_detail(v_id);
+  perform tests.ok(j ->> 'requester_email' = 'f***@clinica.com.br', 'DEV vê o e-mail mascarado');
+  perform tests.logout();
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');   -- PO: completo
+  j := public.get_request_detail(v_id);
+  perform tests.ok(j ->> 'requester_email' = 'fulano.tal@clinica.com.br', 'PO vê o e-mail completo');
+  select public.export_requests('{}'::jsonb)::text into v_exp;
+  perform tests.logout();
+  perform tests.ok(position('@' in v_exp) = 0 and position('fulano' in v_exp) = 0, 'exportação continua sem e-mail');
+  perform tests.ok(public.get_request_by_token(v_tok) ->> 'has_email' = 'true' and (public.get_request_by_token(v_tok)::text !~ 'clinica\.com'), 'acompanhamento só informa que há e-mail, sem mostrá-lo');
+end $t$;
+
+-- ───────── 24. e-mails automáticos (pg_net) ─────────
+do $t$
+declare v_c uuid := gen_random_uuid(); v_tok text; v_id uuid; n int; b jsonb;
+begin
+  select count(*) into n from net.calls;
+  perform tests.ok(n = 0, 'sem configuração, nenhum webhook é disparado (mesmo com pedidos já criados)');
+
+  insert into private.app_settings values ('notify_url', 'https://exemplo.supabase.co/functions/v1/notify'), ('notify_secret', 'segredo-teste');
+
+  perform tests.login(v_c, 'aal1', true);
+  select s.tracking_token into v_tok from public.submit_request(null,null,'Clínica Aviso','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Pedido para notificar','Descrição suficientemente longa para validar.','{}','cliente@exemplo.com') s;
+  perform tests.logout();
+  select id into v_id from public.requests where tracking_token = v_tok;
+  select body into b from net.calls order by id desc limit 1;
+  perform tests.ok(b ->> 'event' = 'request_created' and b ->> 'client_email' = 'cliente@exemplo.com' and b ->> 'tracking_token' = v_tok and b ->> 'clinic_name' = 'Clínica Aviso', 'novo pedido dispara request_created com e-mail, token e clínica');
+  perform tests.ok(b::text !~ 'Fulano' and b::text !~ '84998493000', 'payload não carrega nome nem telefone');
+  perform tests.ok((select headers ->> 'x-webhook-secret' = 'segredo-teste' and url like '%/notify' from net.calls order by id desc limit 1), 'segredo vai no cabeçalho');
+
+  select count(*) into n from net.calls;
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_status(v_id, 'EM_ANALISE_PRODUTO');
+  perform tests.logout();
+  select body into b from net.calls order by id desc limit 1;
+  perform tests.ok((select count(*) = n + 1 from net.calls) and b ->> 'event' = 'status_changed' and b ->> 'status' = 'EM_ANALISE_PRODUTO' and b ->> 'previous_status' = 'RECEBIDO', 'mudança de status dispara status_changed');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.add_comment(v_id, 'nota interna não vai por e-mail', true);
+  perform tests.logout();
+  perform tests.ok((select count(*) = n + 1 from net.calls), 'comentário interno NÃO dispara e-mail');
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.add_comment(v_id, 'Resposta pública para o cliente', false);
+  perform tests.logout();
+  select body into b from net.calls order by id desc limit 1;
+  perform tests.ok(b ->> 'event' = 'comment_public' and b ->> 'body' = 'Resposta pública para o cliente' and b ->> 'client_email' = 'cliente@exemplo.com', 'resposta pública dispara comment_public');
+
+  perform tests.login(gen_random_uuid(), 'aal1', true);
+  perform public.add_client_comment(v_tok, 'Resposta do cliente');
+  perform tests.logout();
+  select body into b from net.calls order by id desc limit 1;
+  perform tests.ok(b ->> 'event' = 'client_reply' and b ->> 'body' = 'Resposta do cliente' and not (b ? 'client_email'), 'resposta do cliente dispara client_reply (só para a equipe)');
+
+  -- pedido sem e-mail: equipe é avisada, cliente não recebe nada nas mudanças
+  select count(*) into n from net.calls;
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_status(tests.get('id1')::uuid, 'APROVADO_ROADMAP');
+  perform public.add_comment(tests.get('id1')::uuid, 'sem e-mail cadastrado', false);
+  perform tests.logout();
+  perform tests.ok((select count(*) = n from net.calls), 'sem e-mail do cliente, status e resposta pública não disparam envio');
+
+  -- arquivar não dispara
+  select count(*) into n from net.calls;
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.archive_request(v_id);
+  perform tests.logout();
+  perform tests.ok((select count(*) = n from net.calls), 'arquivar não dispara e-mail');
+end $t$;
+
+-- falha no pg_net nunca derruba o envio
+create or replace function net.http_post(url text, body jsonb default '{}'::jsonb, params jsonb default '{}'::jsonb,
+                                         headers jsonb default '{}'::jsonb, timeout_milliseconds int default 5000)
+returns bigint language plpgsql as $$ begin raise exception 'pg_net fora do ar'; end $$;
+do $t$
+declare v_r record;
+begin
+  select * into v_r from tests.mk('Pedido com pg_net quebrado', null, 'Clínica Qualquer');
+  perform tests.ok(v_r.protocol is not null, 'falha no webhook não impede o envio do pedido');
+end $t$;
+create or replace function net.http_post(url text, body jsonb default '{}'::jsonb, params jsonb default '{}'::jsonb,
+                                         headers jsonb default '{}'::jsonb, timeout_milliseconds int default 5000)
+returns bigint language sql as $$ insert into net.calls (url, body, headers) values (url, body, headers) returning id $$;
+delete from private.app_settings;
+
+-- ───────── 25. roadmap público e votos ─────────
+do $t$
+declare r1 record; r2 record; r3 record; a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); j jsonb; n int; v_sub uuid := gen_random_uuid(); v_extra uuid;
+begin
+  select * into r1 from tests.mk('Pedido publicado no roadmap', null, 'Clínica Teste V2');
+  select * into r2 from tests.mk('Pedido privado do cliente', null, 'Clínica Teste V2');
+  select * into r3 from tests.mk('Pedido duplicado e mesclado', null, 'Clínica Teste V2');
+  perform tests.set('pub1', r1.id::text); perform tests.set('pub2', r2.id::text);
+
+  perform tests.login('a0000000-0000-0000-0000-000000000004', 'aal2');
+  perform tests.fails(format('select public.set_request_public(%L, true)', r1.id), 'forbidden', 'DEV não publica');
+  perform tests.logout();
+  perform tests.login('a0000000-0000-0000-0000-000000000003', 'aal2');
+  perform tests.fails(format('select public.set_request_public(%L, true)', r1.id), 'forbidden', 'Suporte não publica');
+  perform tests.logout();
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_public(r1.id, true);
+  perform public.merge_request(r3.id, r1.id);
+  perform tests.fails(format('select public.set_request_public(%L, true)', r3.id), 'invalid_publish', 'pedido mesclado não é publicado');
+  perform tests.fails(format('select public.set_request_public(%L, true)', gen_random_uuid()), 'not_found', 'publicar id inexistente');
+  perform tests.logout();
+
+  perform tests.as_anon_role();    -- sem sessão nenhuma
+  j := public.list_public_requests();
+  perform tests.logout();
+  perform tests.ok((j ->> 'total')::int = 1 and j -> 'rows' -> 0 ->> 'title' = 'Pedido publicado no roadmap', 'lista pública (sem login) mostra só o publicado');
+  perform tests.ok(j::text !~ 'Maria Teste' and j::text !~ '84986109779' and not (j -> 'rows' -> 0 ? 'requester_name'), 'lista pública não vaza dados pessoais');
+  perform tests.ok(j -> 'rows' -> 0 ->> 'voted_by_me' = 'false', 'sem sessão: voted_by_me=false');
+
+  perform tests.as_anon_role();
+  perform tests.fails(format('select public.vote_request(%L)', r1.id), 'permission denied', 'votar exige sessão (anon nem executa)');
+  perform tests.logout();
+
+  perform tests.login(a, 'aal1', true);
+  perform tests.ok(public.vote_request(r1.id) = 1, 'primeiro voto = 1');
+  perform tests.ok(public.vote_request(r1.id) = 1, 'votar de novo não duplica');
+  perform tests.fails(format('select public.vote_request(%L)', r2.id), 'not_found', 'não vota em pedido não publicado');
+  j := public.list_public_requests();
+  perform tests.ok(j -> 'rows' -> 0 ->> 'voted_by_me' = 'true' and (j -> 'rows' -> 0 ->> 'votes')::int = 1, 'lista marca "voted_by_me" e conta 1');
+  perform tests.logout();
+  perform tests.login(b, 'aal1', true);
+  perform tests.ok(public.vote_request(r1.id) = 2, 'segundo cliente: 2 votos');
+  perform tests.ok(public.unvote_request(r1.id) = 1, 'retirar o voto volta para 1');
+  perform tests.ok(public.unvote_request(r1.id) = 1, 'retirar de novo é inofensivo');
+  perform tests.logout();
+
+  -- o autor do pedido não vota no próprio
+  select submitted_by into v_sub from public.requests where id = r1.id;
+  perform tests.login(v_sub, 'aal1', true);
+  perform tests.fails(format('select public.vote_request(%L)', r1.id), 'invalid_vote', 'autor não vota no próprio pedido');
+  perform tests.logout();
+
+  -- busca e filtro
+  perform tests.as_anon_role();
+  perform tests.ok((public.list_public_requests('roadmap') ->> 'total')::int = 1 and (public.list_public_requests('zzzz') ->> 'total')::int = 0, 'busca na lista pública');
+  perform tests.ok((public.list_public_requests(null, 'FINANCEIRO') ->> 'total')::int = 0 and (public.list_public_requests(null, 'AGENDA') ->> 'total')::int = 1, 'filtro por módulo');
+  perform tests.logout();
+
+  -- limite de 60 votos por hora
+  insert into public.requests (requester_name, requester_role, whatsapp_e164, pending_clinic_name, title, description, module, type, is_public)
+  select 'Gerado ' || g, 'OUTRO', '+5584999990000', 'Clínica Massa', 'Pedido em massa ' || g, 'Descrição de teste em massa para votação.', 'OUTRO', 'MELHORIA_FLUXO', true
+  from generate_series(1, 61) g;
+  insert into public.request_votes (request_id, user_id)
+  select id, 'b0000000-0000-0000-0000-0000000000ff' from public.requests where title like 'Pedido em massa %' order by title limit 60;
+  v_extra := (select id from public.requests where is_public and title like 'Pedido em massa %'
+                and id not in (select request_id from public.request_votes where user_id = 'b0000000-0000-0000-0000-0000000000ff') limit 1);
+  perform tests.login('b0000000-0000-0000-0000-0000000000ff', 'aal1', true);
+  perform tests.fails(format('select public.vote_request(%L)', v_extra), 'rate_limited', '61º voto na mesma hora é barrado');
+  perform tests.logout();
+  -- limpar o ruído para as próximas seções
+  delete from public.request_votes where user_id = 'b0000000-0000-0000-0000-0000000000ff';
+  update public.requests set is_public = false where title like 'Pedido em massa %';
+  perform tests.ok((select count(*) from public.requests where is_public) = 1, 'apenas o pedido publicado segue público');
+end $t$;
+
+-- ───────── 26. resposta do cliente ─────────
+do $t$
+declare v_tok text := tests.get('tok_mail'); v_id uuid; r record; c uuid := gen_random_uuid(); j jsonb; v_path text; cid uuid; n int; i int;
+begin
+  select * into r from tests.mk('Pedido para respostas do cliente', null, 'Clínica Teste V2');
+  v_tok := r.token; v_id := r.id; perform tests.set('rep_id', v_id::text); perform tests.set('rep_tok', v_tok);
+
+  perform tests.as_anon_role();
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', v_tok, 'oi'), 'permission denied', 'responder exige sessão (anon nem executa)');
+  perform tests.logout();
+  perform tests.login(c, 'aal1', true);
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', repeat('0', 48), 'oi'), 'not_found', 'token inexistente');
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', 'abc', 'oi'), 'not_found', 'token malformado');
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', v_tok, '   '), 'invalid_comment', 'resposta vazia');
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', v_tok, repeat('x', 4001)), 'invalid_comment', 'resposta acima de 4000');
+  cid := public.add_client_comment(v_tok, '  Segue mais detalhe do problema.  ');
+  perform tests.ok(cid is not null, 'cliente responde com o token');
+  perform tests.logout();
+
+  j := public.get_request_by_token(v_tok);
+  perform tests.ok(jsonb_array_length(j -> 'comments') = 1 and j -> 'comments' -> 0 ->> 'from_client' = 'true' and j -> 'comments' -> 0 ->> 'body' = 'Segue mais detalhe do problema.', 'resposta aparece no acompanhamento como "do cliente"');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  j := public.get_request_detail(v_id);
+  perform tests.ok(j -> 'comments' -> 0 ->> 'author_kind' = 'CLIENT' and j -> 'comments' -> 0 -> 'author_name' = 'null'::jsonb, 'equipe vê a resposta marcada como CLIENT');
+  j := public.list_requests(jsonb_build_object('q', r.protocol));
+  perform tests.ok(j -> 'rows' -> 0 ->> 'awaiting_reply' = 'true', 'lista marca "aguardando resposta da equipe"');
+  perform public.add_comment(v_id, 'Obrigado, estamos analisando.', false);
+  j := public.list_requests(jsonb_build_object('q', r.protocol));
+  perform tests.ok(j -> 'rows' -> 0 ->> 'awaiting_reply' = 'false', 'resposta pública da equipe limpa a marca');
+  perform tests.logout();
+
+  -- anexos na resposta
+  v_path := c::text || '/' || gen_random_uuid() || '__print.png';
+  insert into storage.objects (bucket_id, name, owner, metadata) values ('attachments', v_path, c, '{"mimetype":"image/png","size":1234}');
+  perform tests.login(c, 'aal1', true);
+  perform public.add_client_comment(v_tok, 'Com anexo', array[v_path]);
+  perform tests.fails(format('select public.add_client_comment(%L, %L, %L::text[])', v_tok, 'reuso', array[v_path]), 'invalid_attachment', 'mesmo arquivo não é anexado duas vezes');
+  perform tests.fails(format('select public.add_client_comment(%L, %L, %L::text[])', v_tok, 'de outro', array[gen_random_uuid()::text || '/x.png']), 'invalid_attachment', 'arquivo de outra pasta é recusado');
+  perform tests.fails(format('select public.add_client_comment(%L, %L, %L::text[])', v_tok, 'inexistente', array[c::text || '/nao-existe.png']), 'invalid_attachment', 'arquivo que não existe no bucket');
+  perform tests.logout();
+  perform tests.ok((select count(*) = 1 from public.request_attachments where request_id = v_id and file_name = 'print.png'), 'anexo da resposta fica no pedido');
+
+  -- limite de 5 respostas em 10 minutos
+  perform tests.login(c, 'aal1', true);
+  for i in 1..10 loop
+    begin perform public.add_client_comment(v_tok, 'rajada ' || i); n := i; exception when others then exit; end;
+  end loop;
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', v_tok, 'mais uma'), 'rate_limited', 'a 6ª é barrada');
+  perform tests.logout();
+  perform tests.ok((select count(*) from public.request_comments where request_id = v_id and author_kind = 'CLIENT' and created_at > now() - interval '10 minutes') = 5, 'no máximo 5 respostas do cliente em 10 minutos');
+
+  -- pedido arquivado não aceita resposta
+  select * into r from tests.mk('Pedido arquivado sem respostas', null, 'Clínica Teste V2');
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.archive_request(r.id);
+  perform tests.logout();
+  perform tests.login(gen_random_uuid(), 'aal1', true);
+  perform tests.fails(format('select public.add_client_comment(%L, %L)', r.token, 'oi'), 'closed_request', 'arquivado não recebe resposta');
+  perform tests.logout();
+end $t$;
+
+-- ───────── 27. pesquisa de satisfação (CSAT) ─────────
+do $t$
+declare r record; j jsonb;
+begin
+  select * into r from tests.mk('Pedido para avaliar', null, 'Clínica Teste V2');
+  perform tests.as_anon_role();
+  perform tests.fails(format('select public.rate_request(%L, 5)', r.token), 'not_rateable', 'não avalia antes de concluir');
+  perform tests.logout();
+  perform tests.ok((select completed_at is null from public.requests where id = r.id), 'completed_at vazio enquanto aberto');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_status(r.id, 'CONCLUIDO');
+  perform tests.logout();
+  perform tests.ok((select completed_at is not null from public.requests where id = r.id), 'completed_at preenchido ao concluir');
+
+  perform tests.as_anon_role();
+  perform tests.fails(format('select public.rate_request(%L, 0)', r.token), 'invalid_score', 'nota 0 inválida');
+  perform tests.fails(format('select public.rate_request(%L, 6)', r.token), 'invalid_score', 'nota 6 inválida');
+  perform tests.fails(format('select public.rate_request(%L, 5)', repeat('0', 48)), 'not_found', 'token inexistente');
+  perform tests.fails(format('select public.rate_request(%L, 5, %L)', r.token, repeat('x', 1001)), 'invalid_comment', 'comentário > 1000');
+  perform public.rate_request(r.token, 4, '  Bom, mas demorou  ');
+  j := public.get_request_by_token(r.token);
+  perform tests.logout();
+  perform tests.ok((j ->> 'csat_score')::int = 4 and j ->> 'csat_comment' = 'Bom, mas demorou', 'avaliação aparece no acompanhamento (sem login)');
+  perform tests.as_anon_role(); perform public.rate_request(r.token, 5); perform tests.logout();
+  perform tests.ok((select csat_score = 5 and csat_comment is null from public.requests where id = r.id), 'cliente pode mudar a nota');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  j := public.get_request_detail(r.id);
+  perform tests.ok((j -> 'csat' ->> 'score')::int = 5, 'equipe vê a nota no detalhe');
+  perform public.set_request_status(r.id, 'EM_DESENVOLVIMENTO');
+  perform tests.logout();
+  perform tests.ok((select completed_at is null from public.requests where id = r.id), 'reabrir limpa completed_at');
+  perform tests.ok(exists (select 1 from public.audit_logs where entity = 'requests' and entity_id = r.id::text and new_value ->> 'csat_score' = '5'), 'avaliação foi auditada');
+end $t$;
+
+-- ───────── 28. métricas ─────────
+do $t$
+declare j jsonb; v_fr numeric;
+begin
+  perform tests.login('a0000000-0000-0000-0000-000000000004', 'aal2');
+  perform tests.fails('select public.get_metrics(90)', 'forbidden', 'DEV não vê métricas');
+  perform tests.logout();
+  perform tests.login('a0000000-0000-0000-0000-000000000005', 'aal2');
+  perform tests.fails('select public.get_metrics(90)', 'forbidden', 'quem não é da equipe não vê métricas');
+  perform tests.logout();
+  perform tests.as_anon_role();
+  perform tests.ok(not has_function_privilege('anon', 'public.get_metrics(int)', 'execute'), 'anon não executa get_metrics');
+  perform tests.logout();
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_status(tests.get('rep_id')::uuid, 'CONCLUIDO');
+  perform tests.logout();
+  perform tests.login('a0000000-0000-0000-0000-000000000003', 'aal2');   -- Suporte pode
+  j := public.get_metrics(0);
+  perform tests.logout();
+  perform tests.ok((j ->> 'total')::int > 5 and (j ->> 'completed')::int >= 1 and (j ->> 'total')::int = (j ->> 'open')::int + (j ->> 'completed')::int, 'métricas: total = abertas + concluídas');
+  perform tests.ok(jsonb_array_length(j -> 'weekly') = 12 and jsonb_array_length(j -> 'csat' -> 'distribution') = 5, 'métricas: 12 semanas e 5 notas');
+  perform tests.ok((j -> 'csat' ->> 'count')::int >= 1 and (j -> 'csat' ->> 'avg')::numeric between 1 and 5, 'métricas: CSAT');
+  perform tests.ok(j ->> 'avg_first_response_hours' is not null and (j ->> 'avg_first_response_hours')::numeric >= 0, 'métricas: tempo até a 1ª resposta');
+  perform tests.ok(j::text !~ 'Maria Teste|Sarah|84986109779|@exemplo|@clinica', 'métricas não carregam dados pessoais');
+  perform tests.ok((j -> 'top_voted') is not null and (j ->> 'votes_total')::int >= 0, 'métricas: votos');
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform tests.ok((public.get_metrics(1) ->> 'total')::int <= (public.get_metrics(0) ->> 'total')::int, 'filtro de período reduz (ou mantém) o total');
+  perform tests.logout();
+end $t$;
+
+-- ───────── 29. importação da planilha antiga ─────────
+do $t$
+declare j jsonb; rows jsonb; n0 int; n_calls int; v_id uuid;
+begin
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform tests.fails($$select public.admin_import_requests('[]'::jsonb)$$, 'forbidden', 'PO não importa');
+  perform tests.logout();
+
+  rows := jsonb_build_array(
+    jsonb_build_object('key','k1','created_at','2025-03-10T14:30:00-03:00','clinic','KARDIÓMOV','unit','unidade 1','name','Sarah Silva','role','ADMINISTRADOR',
+      'whatsapp','(84) 99849-3000','module','FINANCEIRO','type','MELHORIA_FLUXO','title','Pagamento antecipado de consulta','description','Texto antigo da planilha com tamanho suficiente.','status','CONCLUIDO','email','sarah@antiga.com'),
+    jsonb_build_object('key','k2','created_at','2025-04-01T09:00:00-03:00','clinic','Clínica Que Não Existe','name','Renata Souza','role','FARMACEUTICO',
+      'whatsapp','telefone ruim','module','ESTOQUE_FARMACIA','type','NOVA_FUNCIONALIDADE','title','Adicionar marcas ao produto','description','Solicito adicionar a opção de marca no cadastro de produto.'),
+    jsonb_build_object('key','k3','clinic','Kardiomov','name','Fulano de Tal','role','MEDICO','whatsapp','84998493000','module','AGENDA','type','SUGESTAO_TECNICA','title','abc','description','Título curto demais para passar na validação.'),
+    jsonb_build_object('key','k4','clinic','Kardiomov','name','Beltrano','role','PAPEL_INVENTADO','whatsapp','84998493000','module','AGENDA','type','SUGESTAO_TECNICA','title','Papel inexistente no banco','description','Valor de enum inválido deve virar erro da linha.'),
+    jsonb_build_object('key','k5','created_at','2999-01-01T00:00:00Z','clinic','Kardiomov','name','Ciclano','role','OUTRO','whatsapp','84998493000','module','OUTRO','type','NOVA_FUNCIONALIDADE','title','Data no futuro vira agora','description','A data futura deve ser limitada ao momento atual.')
+  );
+  select count(*) into n0 from public.requests;
+  select count(*) into n_calls from net.calls;
+  insert into private.app_settings values ('notify_url', 'https://exemplo/notify'), ('notify_secret', 's');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  j := public.admin_import_requests(rows);
+  perform tests.logout();
+  perform tests.ok((j ->> 'inserted')::int = 3 and (j ->> 'skipped')::int = 2 and jsonb_array_length(j -> 'errors') = 2, 'importa 3 e rejeita 2 (título curto e enum inválido)');
+  perform tests.ok(j -> 'errors' @> '[{"row":2}]'::jsonb and j -> 'errors' @> '[{"row":3}]'::jsonb, 'erros apontam a linha (base 0) de cada falha');
+  perform tests.ok((select count(*) = n0 + 3 from public.requests), '3 solicitações novas');
+  perform tests.ok((select count(*) = n_calls from net.calls), 'importação NÃO dispara e-mails');
+  delete from private.app_settings;
+
+  select id into v_id from public.requests where import_key = 'k1';
+  perform tests.ok((select origin = 'IMPORT' and status = 'CONCLUIDO' and created_at = '2025-03-10T14:30:00-03:00'::timestamptz and completed_at is not null and clinic_id = 'c0000000-0000-0000-0000-000000000001' and unit_id = 'd0000000-0000-0000-0000-000000000001' and requester_email = 'sarah@antiga.com' from public.requests where id = v_id), 'linha 1: clínica e unidade casadas sem acento/caixa, data e status preservados');
+  perform tests.ok((select clinic_id is null and pending_clinic_name = 'Clínica Que Não Existe' and whatsapp_e164 = '+5500000000000' from public.requests where import_key = 'k2'), 'linha 2: clínica nova vira pendente; telefone ruim vira marcador');
+  perform tests.ok(exists (select 1 from public.request_tags rt join public.tags t on t.id = rt.tag_id join public.requests r on r.id = rt.request_id where r.import_key = 'k2' and t.name = 'telefone-invalido'), 'linha 2 recebe a tag telefone-invalido');
+  perform tests.ok((select created_at <= now() from public.requests where import_key = 'k5'), 'data no futuro é limitada a agora');
+  perform tests.ok((select count(distinct protocol) = count(*) from public.requests), 'protocolos continuam únicos');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  j := public.admin_import_requests(rows);
+  perform tests.ok((j ->> 'inserted')::int = 0 and (j ->> 'skipped')::int = 5, 'repetir o mesmo lote não duplica');
+  perform tests.fails(format('select public.admin_import_requests(%L::jsonb)', (select jsonb_agg(jsonb_build_object('key', g)) from generate_series(1, 201) g)), 'too_many_rows', 'lote acima de 200 linhas é recusado');
+  perform tests.fails($$select public.admin_import_requests('{"a":1}'::jsonb)$$, 'invalid_input', 'entrada que não é lista');
+  perform tests.logout();
+  perform tests.ok(exists (select 1 from public.audit_logs where entity = 'import_batch' and (new_value ->> 'inserted')::int = 3), 'lote importado foi auditado');
+  perform tests.ok((select count(*) from public.audit_logs where entity = 'requests' and action = 'CREATE' and new_value ->> 'origin' = 'IMPORT') = 3, 'cada linha importada tem CREATE na trilha');
+end $t$;
+
+-- ───────── 24b. registro das tentativas de e-mail ─────────
+do $t$
+declare j jsonb;
+begin
+  perform tests.ok((select count(*) > 0 from private.notify_log where outcome = 'ENFILEIRADO' and net_id is not null), 'tentativas aceitas pelo pg_net ficam registradas');
+  perform tests.ok((select count(*) = 1 from private.notify_log where outcome = 'ERRO' and detail like '%pg_net fora do ar%'), 'falha do pg_net fica registrada com o motivo (e não derruba o pedido)');
+  perform tests.ok((select count(*) = 0 from private.notify_log where coalesce(detail, '') ~ '@' or event ~ '@' or coalesce(protocol, '') ~ '@'), 'o registro não guarda e-mail de ninguém');
+  insert into net._http_response (id, status_code, error_msg) select max(net_id), 401, null from private.notify_log where outcome = 'ENFILEIRADO';
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  j := public.admin_notify_log(500);
+  perform tests.logout();
+  perform tests.ok(jsonb_array_length(j) >= 2 and (j -> 0 ->> 'id')::bigint > (j -> 1 ->> 'id')::bigint, 'Admin lê o registro, do mais novo para o mais antigo');
+  perform tests.ok(exists (select 1 from jsonb_array_elements(j) e where e ->> 'http_status' = '401'), 'o status HTTP da função aparece junto (quando o pg_net o guarda)');
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform tests.fails($$select public.admin_notify_log(10)$$, 'forbidden', 'PO não lê o registro de e-mails');
+  perform tests.logout();
+  perform tests.ok(not has_table_privilege('authenticated', 'private.notify_log', 'select') and not has_function_privilege('anon', 'public.admin_notify_log(int)', 'execute'), 'registro fechado para anon e authenticated');
+end $t$;
+
+-- ───────── 24c. SLA: sem resposta / paradas ─────────
+do $t$
+declare a record; b record; c record; d record; v_r public.requests; j jsonb; n int; v_before int; v_body jsonb;
+  v_po uuid := 'a0000000-0000-0000-0000-000000000002';
+begin
+  select * into a from tests.mk('SLA pedido sem resposta', null, 'Clínica SLA');
+  select * into b from tests.mk('SLA pedido em análise parado', null, 'Clínica SLA');
+  select * into c from tests.mk('SLA pedido cliente respondeu', null, 'Clínica SLA');
+  select * into d from tests.mk('SLA pedido em dia', null, 'Clínica SLA');
+
+  select * into v_r from public.requests where id = a.id;
+  perform tests.ok(private.sla_state(v_r) is null, 'pedido novo não está atrasado');
+
+  set local session_replication_role = replica;   -- permite "voltar no tempo" (os gatilhos de imutabilidade ficam de fora)
+  update public.requests set created_at = now() - interval '4 days' where id = a.id;
+  update public.requests set status = 'EM_ANALISE_PRODUTO', created_at = now() - interval '40 days', updated_at = now() - interval '20 days' where id = b.id;
+  update public.requests set created_at = now() - interval '10 days' where id = c.id;
+  set local session_replication_role = origin;
+
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = a.id)) = 'SEM_RESPOSTA', 'Recebido há 4 dias sem resposta da equipe = SEM_RESPOSTA');
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = b.id)) = 'PARADA', 'Em análise sem movimento há 20 dias = PARADA');
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = d.id)) is null, 'pedido recente continua em dia');
+
+  -- resposta da equipe resolve o primeiro caso e o segundo
+  perform tests.login(v_po, 'aal2');
+  perform public.add_comment(a.id, 'Já estamos olhando.', false);
+  perform public.add_comment(b.id, 'Nota interna de acompanhamento.', true);
+  perform tests.logout();
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = a.id)) is null, 'resposta pública da equipe tira do SEM_RESPOSTA');
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = b.id)) is null, 'qualquer comentário da equipe conta como movimento (sai de PARADA)');
+
+  -- cliente respondeu por último há mais de 3 dias
+  perform tests.login(v_po, 'aal2');
+  perform public.add_comment(c.id, 'Pode detalhar?', false);
+  perform tests.logout();
+  perform tests.login(gen_random_uuid(), 'aal1', true);
+  perform public.add_client_comment(c.token, 'Segue o detalhe pedido.');
+  perform tests.logout();
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = c.id)) is null, 'resposta recente do cliente ainda está no prazo');
+  update public.request_comments set created_at = now() - interval '6 days' where request_id = c.id and author_kind = 'STAFF';
+  update public.request_comments set created_at = now() - interval '5 days' where request_id = c.id and author_kind = 'CLIENT';
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = c.id)) = 'SEM_RESPOSTA', 'cliente respondeu há 5 dias e a equipe não voltou = SEM_RESPOSTA');
+
+  -- exclusões
+  set local session_replication_role = replica;
+  update public.requests set status = 'CONCLUIDO' where id = c.id;
+  set local session_replication_role = origin;
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = c.id)) is null, 'concluída nunca é atrasada');
+
+  -- prazo configurável
+  update public.requests set status = 'RECEBIDO' where id = a.id;   -- (já tem resposta da equipe)
+  delete from public.request_comments where request_id = a.id;
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = a.id)) = 'SEM_RESPOSTA', 'sem resposta de novo (prazo padrão de 3 dias)');
+  insert into private.app_settings values ('sla_first_days', '10');
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = a.id)) is null, 'prazo configurável: com 10 dias, 4 dias ainda está em dia');
+  delete from private.app_settings where key = 'sla_first_days';
+
+  -- volta o pedido B ao estado "parado" para os testes de lista, filtro e resumo
+  delete from public.request_comments where request_id = b.id;
+  set local session_replication_role = replica;
+  update public.requests set updated_at = now() - interval '20 days' where id = b.id;
+  set local session_replication_role = origin;
+  perform tests.ok(private.sla_state((select r from public.requests r where r.id = b.id)) = 'PARADA', 'sem movimento de novo = PARADA');
+
+  -- lista, filtro e métricas
+  perform tests.login(v_po, 'aal2');
+  j := public.list_requests('{"sla":"stalled"}'::jsonb, 1, 200);
+  perform tests.ok((select bool_and(e ->> 'sla' is not null) from jsonb_array_elements(j -> 'rows') e) and (j ->> 'total')::int >= 2, 'filtro "paradas" devolve só pedidos com SLA vencido');
+  perform tests.ok(exists (select 1 from jsonb_array_elements(j -> 'rows') e where e ->> 'protocol' = a.protocol and e ->> 'sla' = 'SEM_RESPOSTA'), 'a linha traz o motivo (SEM_RESPOSTA)');
+  perform tests.ok(not exists (select 1 from jsonb_array_elements(j -> 'rows') e where e ->> 'protocol' = d.protocol), 'pedido em dia fica de fora do filtro');
+  perform tests.ok((select (e ->> 'sla') is null from jsonb_array_elements(public.list_requests('{}'::jsonb, 1, 200) -> 'rows') e where e ->> 'protocol' = d.protocol), 'sem filtro, pedido em dia vem com sla nulo');
+  perform tests.ok((public.get_metrics(0) ->> 'stalled')::int = (j ->> 'total')::int, 'métrica "stalled" bate com o filtro');
+  perform tests.logout();
+
+  -- resumo diário
+  select count(*) into v_before from net.calls;
+  n := private.send_sla_digest();
+  perform tests.ok(n >= 2 and (select count(*) = v_before from net.calls), 'sem e-mail configurado, o resumo não chama a função (e não dá erro)');
+  insert into private.app_settings values ('notify_url', 'https://exemplo/notify'), ('notify_secret', 's');
+  select count(*) into v_before from net.calls;
+  n := private.send_sla_digest();
+  select c2.body into v_body from net.calls c2 order by id desc limit 1;
+  perform tests.ok(n >= 2 and (select count(*) = v_before + 1 from net.calls) and v_body ->> 'event' = 'sla_digest' and (v_body ->> 'count')::int = n, 'resumo diário dispara 1 evento com a contagem');
+  perform tests.ok(jsonb_array_length(v_body -> 'items') = least(n, 30) and v_body::text !~ 'Maria Teste' and v_body::text !~ '84986109779', 'itens do resumo limitados a 30 e sem dados pessoais');
+  perform tests.ok(exists (select 1 from jsonb_array_elements(v_body -> 'items') e where e ->> 'protocol' = a.protocol), 'resumo lista o pedido atrasado');
+  delete from private.app_settings;
+end $t$;
+
+-- ───────── 30. privilégios das novidades ─────────
+do $t$
+begin
+  perform tests.ok(has_function_privilege('anon', 'public.list_public_requests(text,public.system_module,int)', 'execute'), 'anon lê o roadmap público');
+  perform tests.ok(has_function_privilege('anon', 'public.rate_request(text,int,text)', 'execute'), 'anon avalia pelo token');
+  perform tests.ok(not has_function_privilege('anon', 'public.vote_request(uuid)', 'execute') and not has_function_privilege('anon', 'public.add_client_comment(text,text,text[])', 'execute'), 'anon não vota nem responde (precisa de sessão)');
+  perform tests.ok(not has_function_privilege('anon', 'public.admin_import_requests(jsonb)', 'execute') and not has_function_privilege('anon', 'public.set_request_public(uuid,boolean)', 'execute'), 'anon não importa nem publica');
+  perform tests.ok(not has_table_privilege('authenticated', 'private.app_settings', 'select') and not has_table_privilege('anon', 'private.app_settings', 'select'), 'configurações internas fechadas');
+  perform tests.ok(not has_table_privilege('authenticated', 'public.request_votes', 'select') and not has_table_privilege('anon', 'public.request_votes', 'insert'), 'votos só por RPC');
+  perform tests.ok(not has_function_privilege('authenticated', 'private.notify_event(jsonb)', 'execute'), 'notify_event não é chamável pelo cliente');
 end $t$;
 
 -- ───────── 22. invariantes ─────────

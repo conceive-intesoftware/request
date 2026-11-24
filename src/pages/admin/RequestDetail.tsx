@@ -92,6 +92,7 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
   const [linkId, setLinkId] = useState("");
   const [ext, setExt] = useState({ system: d.external_system ?? "", id: d.external_id ?? "" });
   const [tags, setTags] = useState(d.tags.join(", "));
+  useEffect(() => { setExt({ system: d.external_system ?? "", id: d.external_id ?? "" }); }, [d.external_system, d.external_id]);
 
   async function openAttachment(path: string) {
     try {
@@ -127,8 +128,11 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
             )}
           </dd>
         </div>
+        {d.requester_email && <div><dt>E-mail</dt><dd>{d.pii_masked ? d.requester_email : <a href={`mailto:${d.requester_email}`}>{d.requester_email}</a>}</dd></div>}
         <div><dt>Módulo · Tipo</dt><dd>{labelOf(MODULES, d.module)} · {labelOf(TYPES, d.type)}</dd></div>
         <div><dt>Enviada em</dt><dd>{fmtDateTime(d.created_at)}</dd></div>
+        <div><dt>Apoios no roadmap</dt><dd>{d.votes}{d.origin === "IMPORT" ? " · importada da planilha" : ""}</dd></div>
+        {d.csat?.score != null && <div><dt>Satisfação do cliente</dt><dd>{"★".repeat(d.csat.score)}{"☆".repeat(5 - d.csat.score)} ({d.csat.score}/5){d.csat.comment ? <> — <span className="pre">{d.csat.comment}</span></> : null}</dd></div>}
         <div><dt>Prioridade · RICE</dt><dd>{labelOf(PRIORITIES, d.priority)} · {d.rice.score ?? "—"}</dd></div>
       </dl>
 
@@ -177,7 +181,7 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
 
       {can("request:merge") && !d.merged_into && (
         <form className="row" onSubmit={(e) => void doMerge(e)}>
-          <input className="input" placeholder="Protocolo da solicitação principal (CON-2026-0001)" value={mergeProto} onChange={(e) => setMergeProto(e.target.value)} aria-label="Protocolo para mesclar" />
+          <input className="input" placeholder="Digite o protocolo da solicitação principal" value={mergeProto} onChange={(e) => setMergeProto(e.target.value)} aria-label="Protocolo para mesclar" />
           <button className="btn" disabled={busy || !mergeProto.trim()}>Mesclar nesta</button>
         </form>
       )}
@@ -189,17 +193,37 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
         </div>
       )}
 
+      {can("request:publish") && (
+        <div className="field">
+          <label className="check"><input type="checkbox" checked={d.is_public} disabled={busy} onChange={(e) => {
+            const on = e.target.checked;
+            if (on && !confirm("Publicar no roadmap? O título e a descrição ficarão visíveis a qualquer pessoa, sem nome nem contato do solicitante. Confira se não há dados de pacientes.")) return;
+            void run(() => api.setRequestPublic(d.id, on));
+          }} /> Mostrar no roadmap público (permite votos)</label>
+        </div>
+      )}
+
       {can("request:export_dev") && (
         <form className="row" onSubmit={(e) => { e.preventDefault(); void run(() => api.setExternalRef(d.id, ext.system, ext.id)); }}>
           <Select value={ext.system} onChange={(s) => setExt({ ...ext, system: s })} options={[["REDMINE", "Redmine"], ["PIPEFY", "Pipefy"]]} placeholder="Sistema externo" ariaLabel="Sistema externo" />
-          <input className="input" placeholder="ID da tarefa (ex.: #4521)" value={ext.id} maxLength={80} onChange={(e) => setExt({ ...ext, id: e.target.value })} aria-label="ID externo" />
+          <input className="input" placeholder="Digite o ID da tarefa" value={ext.id} maxLength={80} onChange={(e) => setExt({ ...ext, id: e.target.value })} aria-label="ID externo" />
           <button className="btn" disabled={busy}>Salvar vínculo</button>
         </form>
+      )}
+      {can("request:export_dev") && !d.external_id && (
+        <div className="row">
+          {(["REDMINE", "PIPEFY"] as const).map((sys) => (
+            <button key={sys} className="btn" disabled={busy} onClick={() => void run(async () => {
+              const r = await api.createExternalTask(d.id, sys);
+              if (r.url) window.open(r.url, "_blank", "noopener,noreferrer");
+            })}>Criar tarefa no {sys === "REDMINE" ? "Redmine" : "Pipefy"}</button>
+          ))}
+        </div>
       )}
 
       {can("request:prioritize") && (
         <form className="row" onSubmit={(e) => { e.preventDefault(); void run(() => api.setTags(d.id, tags.split(",").map((t) => t.trim()).filter(Boolean))); }}>
-          <input className="input" placeholder="tags separadas por vírgula" value={tags} onChange={(e) => setTags(e.target.value)} aria-label="Tags" />
+          <input className="input" placeholder="Digite as tags, separadas por vírgula" value={tags} onChange={(e) => setTags(e.target.value)} aria-label="Tags" />
           <button className="btn" disabled={busy}>Salvar tags</button>
         </form>
       )}
@@ -244,7 +268,7 @@ function Prioritization({ d, can, busy, run }: Common) {
         <input id="ef" className="input" type="number" min={0.1} step={0.1} required disabled={!allowed} value={f.effort} onChange={(e) => setF({ ...f, effort: e.target.value })} /></div>
       <div className="field"><span className="label">Score RICE</span><p className="big">{live ?? d.rice.score ?? "—"}</p></div>
       {allowed ? <button className="btn btn-primary full" disabled={busy}>Salvar priorização</button> : <p className="hint full">Seu perfil só pode visualizar.</p>}
-      <p className="hint full">RICE = (Alcance × Impacto × Confiança) ÷ Esforço. O cálculo oficial é feito no banco ao salvar.</p>
+      <p className="hint full">{d.votes > 0 ? `${d.votes} ${d.votes === 1 ? "cliente apoiou" : "clientes apoiaram"} esta solicitação no roadmap (considere no Alcance). ` : ""}RICE = (Alcance × Impacto × Confiança) ÷ Esforço. O cálculo oficial é feito no banco ao salvar.</p>
     </form>
   );
 }
@@ -259,7 +283,7 @@ function Comments({ d, can, busy, run }: Common) {
         {d.comments.length === 0 && <li className="muted">Sem comentários.</li>}
         {d.comments.map((c) => (
           <li key={c.id} className={c.is_internal ? "internal" : "public"}>
-            <p className="small muted"><span className="tag">{c.is_internal ? "Interno" : "Público"}</span> {c.author_name ?? "—"} · {fmtDateTime(c.created_at)}</p>
+            <p className="small muted"><span className="tag">{c.is_internal ? "Interno" : "Público"}</span> {c.author_kind === "CLIENT" ? <span className="tag from-client">Cliente</span> : null} {c.author_kind === "CLIENT" ? "" : (c.author_name ?? "—")} · {fmtDateTime(c.created_at)}</p>
             <p className="pre">{c.body}</p>
           </li>
         ))}

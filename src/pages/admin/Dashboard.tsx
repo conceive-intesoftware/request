@@ -97,6 +97,7 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
         <Select ariaLabel="Cargo" value={filters.requester_role ?? ""} onChange={(v) => setF("requester_role", v)} options={REQUESTER_ROLES} placeholder="Cargo: todos" />
         <Select ariaLabel="Módulo" value={filters.module ?? ""} onChange={(v) => setF("module", v)} options={MODULES} placeholder="Módulo: todos" />
         <Select ariaLabel="Status" value={filters.status ?? ""} onChange={(v) => setF("status", v)} options={STATUSES.filter(([k]) => k !== "ARQUIVADO")} placeholder="Status: todos" />
+        <Select ariaLabel="Atraso" value={filters.sla ?? ""} onChange={(v) => setF("sla", v)} options={[["stalled", "Paradas / sem resposta"]]} placeholder="Atraso: todos" />
         <Select ariaLabel="Prioridade" value={filters.priority ?? ""} onChange={(v) => setF("priority", v)} options={PRIORITIES} placeholder="Prioridade: todas" />
         <input className="input" type="date" aria-label="De" value={filters.from ?? ""} onChange={(e) => setF("from", e.target.value)} />
         <input className="input" type="date" aria-label="Até" value={filters.to ?? ""} onChange={(e) => setF("to", e.target.value)} />
@@ -122,6 +123,11 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
                     <td className="title-cell">
                       <strong>{r.title}</strong>
                       {r.duplicates_count > 0 && <span className="tag">+{r.duplicates_count} similar(es)</span>}
+                      {r.is_public && <span className="tag outline">público</span>}
+                      {r.votes > 0 && <span className="tag outline" title="Apoios no roadmap">▲ {r.votes}</span>}
+                      {r.awaiting_reply && <span className="tag warn-tag">aguardando resposta</span>}
+                      {r.sla && <span className="tag sla-tag" title={r.sla === "PARADA" ? "Sem movimentação da equipe além do prazo" : "Sem resposta da equipe além do prazo"}>{r.sla === "PARADA" ? "parada" : "sem resposta"}</span>}
+                      {r.csat_score != null && <span className="tag outline" title="Satisfação">★ {r.csat_score}</span>}
                       {r.merged_into_id && <span className="tag outline">mesclada</span>}
                     </td>
                     <td>{r.clinic_name ?? <span className="warn" title="Clínica ainda não vinculada">{r.pending_clinic_name} (novo)</span>}</td>

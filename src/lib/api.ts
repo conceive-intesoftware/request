@@ -2,6 +2,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   AuditEntry,
   ClinicAdmin,
+  ExternalTaskResult,
+  ImportResult,
+  NotifyLogRow,
+  ImportRow,
+  Metrics,
+  PublicList,
   Ctx,
   Detail,
   Filters,
@@ -14,7 +20,7 @@ import type {
 } from "./types";
 
 // ───────── cliente injetável (o app usa o Supabase real; os testes usam um cliente falso) ─────────
-type Client = Pick<SupabaseClient, "rpc" | "auth" | "storage" | "from">;
+type Client = Pick<SupabaseClient, "rpc" | "auth" | "storage" | "from"> & Partial<Pick<SupabaseClient, "functions">>;
 let _client: Client | null = null;
 export function setClient(c: unknown) {
   _client = c as Client;
@@ -45,6 +51,13 @@ const FRIENDLY: [RegExp, string][] = [
   [/too_many_attachments/i, "No máximo 5 anexos."],
   [/invalid_attachment/i, "Anexo inválido. Envie o arquivo novamente."],
   [/invalid_comment/i, "Comentário vazio ou grande demais (máx. 4000)."],
+  [/invalid_email/i, "E-mail inválido. Confira o endereço digitado."],
+  [/invalid_vote/i, "Você já enviou este pedido, então ele já conta como o seu apoio."],
+  [/not_rateable/i, "A avaliação só fica disponível depois que a solicitação é concluída."],
+  [/invalid_score/i, "Escolha uma nota de 1 a 5."],
+  [/closed_request/i, "Esta solicitação foi arquivada e não aceita mais respostas."],
+  [/invalid_publish/i, "Não é possível publicar uma solicitação mesclada em outra."],
+  [/too_many_rows/i, "Lote grande demais (máx. 200 linhas por envio)."],
   [/invalid_merge/i, "Não é possível mesclar estas solicitações."],
   [/invalid_system/i, "Sistema externo inválido."],
   [/user_not_found/i, "Este e-mail ainda não existe em Authentication → Users do Supabase. Crie o usuário lá primeiro."],
@@ -94,16 +107,8 @@ export const listUnits = (clinicId: string) => rpc<{ id: string; name: string }[
 const safeName = (n: string) =>
   n.normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "arquivo";
 
-export async function submitRequest(
-  input: SubmitInput,
-  files: UploadableFile[] = [],
-  onProgress?: (done: number, total: number) => void,
-): Promise<{ protocol: string; trackingToken: string }> {
+async function uploadFiles(uid: string, files: UploadableFile[], onProgress?: (done: number, total: number) => void): Promise<string[]> {
   const c = client();
-  const { data: s } = await c.auth.getSession();
-  if (!s.session) throw new ApiError("Sua sessão expirou. Recarregue a página e tente novamente.");
-  const uid = s.session.user.id;
-
   const paths: string[] = [];
   for (const [i, f] of files.entries()) {
     onProgress?.(i + 1, files.length);
@@ -115,6 +120,20 @@ export async function submitRequest(
     if (error) throw new ApiError(`Falha ao enviar o anexo “${f.name}”. Verifique o tipo e o tamanho (máx. 50 MB).`, error.message);
     paths.push(path);
   }
+  return paths;
+}
+
+export async function submitRequest(
+  input: SubmitInput,
+  files: UploadableFile[] = [],
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ protocol: string; trackingToken: string }> {
+  const c = client();
+  const { data: s } = await c.auth.getSession();
+  if (!s.session) throw new ApiError("Sua sessão expirou. Recarregue a página e tente novamente.");
+  const uid = s.session.user.id;
+
+  const paths = await uploadFiles(uid, files, onProgress);
 
   const rows = await rpc<{ protocol: string; tracking_token: string }[]>("submit_request", {
     p_clinic_id: input.clinicId,
@@ -128,6 +147,7 @@ export async function submitRequest(
     p_title: input.title,
     p_description: input.description,
     p_attachment_paths: paths,
+    p_requester_email: input.email?.trim() ? input.email.trim() : null,
   });
   const r = rows?.[0];
   if (!r) throw new ApiError("Resposta inesperada do servidor.");
@@ -135,6 +155,22 @@ export async function submitRequest(
 }
 
 export const getTracking = (token: string) => rpc<Tracking | null>("get_request_by_token", { p_token: token });
+
+/** Resposta do cliente na página de acompanhamento (exige sessão anônima validada pelo CAPTCHA). */
+export async function addClientComment(token: string, body: string, files: UploadableFile[] = [], onProgress?: (done: number, total: number) => void): Promise<string> {
+  const { data: s } = await client().auth.getSession();
+  if (!s.session) throw new ApiError("Sua sessão expirou. Recarregue a página e tente novamente.");
+  const paths = await uploadFiles(s.session.user.id, files, onProgress);
+  return rpc<string>("add_client_comment", { p_token: token, p_body: body, p_attachment_paths: paths });
+}
+export const rateRequest = (token: string, score: number, comment: string | null) =>
+  rpc<null>("rate_request", { p_token: token, p_score: score, p_comment: comment?.trim() ? comment.trim() : null });
+
+// roadmap público e votos
+export const listPublicRequests = (search: string, module: string, page: number) =>
+  rpc<PublicList>("list_public_requests", { p_search: search.trim() || null, p_module: module || null, p_page: page });
+export const voteRequest = (id: string) => rpc<number>("vote_request", { p_request_id: id });
+export const unvoteRequest = (id: string) => rpc<number>("unvote_request", { p_request_id: id });
 
 // ───────── equipe ─────────
 export const myContext = () => rpc<Ctx>("my_context");
@@ -170,6 +206,26 @@ export const linkClinic = (id: string, clinicId: string, unitId: string | null) 
   rpc<null>("link_request_clinic", { p_id: id, p_clinic_id: clinicId, p_unit_id: unitId });
 export const setExternalRef = (id: string, system: string, externalId: string) =>
   rpc<null>("set_external_ref", { p_id: id, p_system: system, p_external_id: externalId });
+export const setRequestPublic = (id: string, isPublic: boolean) => rpc<null>("set_request_public", { p_id: id, p_public: isPublic });
+export const getMetrics = (days: number) => rpc<Metrics>("get_metrics", { p_days: days });
+export const importRequests = (rows: ImportRow[]) => rpc<ImportResult>("admin_import_requests", { p_rows: rows });
+
+/** Cria a tarefa no Redmine/Pipefy pela Edge Function "external-task" (usa o login da própria pessoa). */
+export async function createExternalTask(requestId: string, system: "REDMINE" | "PIPEFY"): Promise<ExternalTaskResult> {
+  const fns = client().functions;
+  if (!fns) throw new ApiError("Integração indisponível neste ambiente.");
+  const { data, error } = await fns.invoke("external-task", { body: { request_id: requestId, system } });
+  if (error) {
+    let detail = "";
+    try { detail = JSON.stringify(await (error as { context?: Response }).context?.json()); } catch { /* sem corpo */ }
+    const raw = `${error.message ?? ""} ${detail}`;
+    if (/not_configured/.test(raw)) throw new ApiError(`A integração com ${system === "REDMINE" ? "o Redmine" : "o Pipefy"} ainda não foi configurada (veja o passo a passo).`, raw);
+    if (/already_linked/.test(raw)) throw new ApiError("Esta solicitação já está vinculada a uma tarefa.", raw);
+    if (/link_failed/.test(raw)) throw new ApiError("A tarefa foi criada, mas não deu para salvar o vínculo. Anote o ID e informe-o manualmente.", raw);
+    throw new ApiError("Não foi possível criar a tarefa. Confira a configuração da integração.", raw);
+  }
+  return data as ExternalTaskResult;
+}
 export const exportRequests = (filters: Filters) =>
   rpc<Record<string, unknown>[]>("export_requests", { p_filters: clean(filters) });
 
@@ -180,6 +236,7 @@ export async function signedAttachmentUrl(path: string): Promise<string> {
 }
 
 // ───────── administração ─────────
+export const adminNotifyLog = (limit = 50) => rpc<NotifyLogRow[]>("admin_notify_log", { p_limit: limit });
 export const adminListStaff = () => rpc<StaffMember[]>("admin_list_staff");
 export const adminUpsertStaff = (email: string, name: string, role: StaffRole, active: boolean) =>
   rpc<string>("admin_upsert_staff", { p_email: email, p_name: name, p_role: role, p_active: active });

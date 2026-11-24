@@ -150,7 +150,7 @@ const base = {
     assert.equal(t.protocol, protocol);
     assert.equal(t.status, "RECEBIDO");
     assert.deepEqual(t.comments, []);
-    assert.deepEqual(Object.keys(t).sort(), ["comments", "created_at", "module", "protocol", "status", "title", "type", "updated_at"]);
+    assert.deepEqual(Object.keys(t).sort(), ["comments", "created_at", "csat_comment", "csat_score", "has_email", "module", "protocol", "status", "title", "type", "updated_at"]);
     assert.equal(await api.getTracking("0".repeat(48)), null);
     assert.equal(await api.getTracking("lixo"), null);
   });
@@ -339,6 +339,109 @@ const base = {
     as("po");
     await rejects(api.adminUpsertStaff("novo@x.com", "Novo Dev", "ADMIN", true), /permissão/);
     await rejects(api.upsertClinic(null, "Clínica do PO", true), /permissão/);
+  });
+
+  console.log("v2 — e-mail, roadmap, respostas, CSAT, métricas, importação");
+  let t2 = "", id2 = "";
+  await step("envio com e-mail: e-mail inválido é recusado; válido é guardado e mascarado para quem não vê PII", async () => {
+    visitor();
+    await api.ensureSession("turnstile-ok");
+    await rejects(api.submitRequest({ ...base, email: "isso-nao-e-email" }), /e-mail/i);
+    const r = await api.submitRequest({ ...base, title: "Roadmap: pedido com e-mail", email: "Cliente@Clinica.com" });
+    t2 = r.trackingToken;
+    as("po");
+    id2 = (await api.listRequests({ q: r.protocol }, 1, 5)).rows[0].id;
+    assert.equal((await api.getRequestDetail(id2))!.requester_email, "cliente@clinica.com");
+    as("dev");
+    assert.notEqual((await api.getRequestDetail(id2))!.requester_email, "cliente@clinica.com");
+  });
+  await step("só quem tem permissão publica; roadmap público não traz dados pessoais", async () => {
+    as("dev");
+    await rejects(api.setRequestPublic(id2, true), /permissão/);
+    as("po");
+    await api.setRequestPublic(id2, true);
+    visitor();
+    const pub = await api.listPublicRequests("", "", 1);
+    const row = pub.rows.find((r) => r.id === id2)!;
+    assert.ok(row);
+    assert.ok(!JSON.stringify(pub).includes("Sarah") && !JSON.stringify(pub).includes("99849") && !JSON.stringify(pub).includes("clinica.com"));
+    assert.equal((await api.listPublicRequests("e-mail", "", 1)).rows.length, 1, "busca por texto");
+    assert.equal((await api.listPublicRequests("", "AGENDA", 1)).rows.length, 0, "filtro por módulo");
+  });
+  await step("votos: outra pessoa apoia, remove e repete (autor bloqueado: coberto nos testes do banco)", async () => {
+    state.identity = { uid: "b0000000-0000-0000-0000-000000000077", aal: "aal1", anon: true };
+    assert.equal(await api.voteRequest(id2), 1);
+    assert.equal(await api.voteRequest(id2), 1, "repetir não soma");
+    assert.equal((await api.listPublicRequests("", "", 1)).rows.find((r) => r.id === id2)!.voted_by_me, true);
+    assert.equal(await api.unvoteRequest(id2), 0);
+    assert.equal(await api.voteRequest(id2), 1);
+  });
+  await step("resposta do cliente com anexo aparece para a equipe; texto vazio é recusado", async () => {
+    visitor();
+    await api.ensureSession("turnstile-ok");
+    await rejects(api.addClientComment("0".repeat(48), "oi tudo bem", []), /./);
+    await api.addClientComment(t2, "Mais um detalhe importante do caso.", [{ name: "foto.png", type: "image/png", size: 100 }]);
+    as("po");
+    const d = (await api.getRequestDetail(id2))!;
+    const c = d.comments.find((x) => x.body.startsWith("Mais um detalhe"))!;
+    assert.equal(c.author_kind, "CLIENT");
+    assert.equal(c.is_internal, false);
+    assert.ok((await api.listRequests({ q: "Roadmap" }, 1, 5)).rows[0].awaiting_reply);
+  });
+  await step("CSAT: só depois de concluir; nota de 1 a 5; pode alterar", async () => {
+    visitor();
+    await api.ensureSession("turnstile-ok");
+    await rejects(api.rateRequest(t2, 5, null), /concluíd|avali/i);
+    as("po");
+    await api.setStatus(id2, "CONCLUIDO");
+    visitor();
+    await api.ensureSession("turnstile-ok");
+    await rejects(api.rateRequest(t2, 9, null), /nota/i);
+    await api.rateRequest(t2, 3, "Demorou");
+    await api.rateRequest(t2, 5, " Ótimo ");
+    const t = await api.getTracking(t2);
+    assert.equal(t?.csat_score, 5);
+    assert.equal(t?.csat_comment, "Ótimo");
+    as("po");
+    assert.equal((await api.getRequestDetail(id2))!.csat.score, 5);
+  });
+  await step("métricas: perfis autorizados veem; Dev não", async () => {
+    as("po");
+    const m = await api.getMetrics(90);
+    assert.ok(m.total >= 2 && m.completed >= 1);
+    assert.equal(m.csat.count, 1);
+    assert.equal(m.csat.avg, 5);
+    assert.ok(m.votes_total >= 1);
+    assert.equal(m.weekly.length, 12);
+    assert.ok(!JSON.stringify(m).includes("Sarah"));
+    as("dev");
+    await rejects(api.getMetrics(90), /permissão/);
+  });
+  await step("importação: só admin; repetir não duplica; linha ruim vira erro, não derruba o lote", async () => {
+    const row = (k: string, extra = {}) => ({ key: k, created_at: "2025-03-12T14:30:00-03:00", clinic: "Kardiomov", unit: "", name: "Marta Souza", role: "RECEPCIONISTA", whatsapp: "(84) 99999-1111", module: "AGENDA", type: "NOVA_FUNCIONALIDADE", title: `Importada ${k}`, description: "Descrição importada com mais de vinte caracteres", status: "CONCLUIDO", email: "", ...extra });
+    as("po");
+    await rejects(api.importRequests([row("k1")]), /permissão/);
+    as("admin");
+    const r1 = await api.importRequests([row("k1"), row("k2", { whatsapp: "sem telefone" }), row("k3", { status: "INEXISTENTE" })]);
+    assert.equal(r1.inserted, 2);
+    assert.equal(r1.errors.length, 1);
+    const r2 = await api.importRequests([row("k1"), row("k2")]);
+    assert.equal(r2.inserted, 0);
+    assert.equal(r2.skipped, 2);
+    const list = await api.listRequests({ q: "Importada k2" }, 1, 5);
+    assert.equal(list.rows.length, 1);
+    assert.ok((await api.getRequestDetail(list.rows[0].id))!.tags.includes("telefone-invalido"));
+    await rejects(api.importRequests(Array.from({ length: 201 }, (_, i) => row(`m${i}`))), /200/);
+  });
+  await step("registro de e-mails: só Admin lê; vazio quando não há e-mail configurado", async () => {
+    as("po");
+    await rejects(api.adminNotifyLog(10), /permissão/);
+    as("admin");
+    assert.deepEqual(await api.adminNotifyLog(10), []);
+  });
+  await step("tarefa externa: sem funções disponíveis, a mensagem é amigável", async () => {
+    as("po");
+    await rejects(api.createExternalTask(id2, "REDMINE"), /indispon|integra/i);
   });
 
   console.log("integridade final");

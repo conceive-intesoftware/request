@@ -53,3 +53,12 @@ end $$;
 grant usage on schema storage to anon, authenticated, service_role;
 grant select, insert on storage.objects to authenticated;
 grant select on storage.buckets to authenticated;
+
+-- pg_net falso: registra as chamadas em net.calls (a Edge Function de e-mail não existe nos testes)
+create schema if not exists net;
+create table if not exists net.calls (id bigserial primary key, url text, body jsonb, headers jsonb);
+create or replace function net.http_post(url text, body jsonb default '{}'::jsonb, params jsonb default '{}'::jsonb,
+                                         headers jsonb default '{}'::jsonb, timeout_milliseconds int default 5000)
+returns bigint language sql as $$ insert into net.calls (url, body, headers) values (url, body, headers) returning id $$;
+
+create table if not exists net._http_response (id bigint primary key, status_code int, content text, error_msg text);

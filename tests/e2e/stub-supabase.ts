@@ -63,6 +63,12 @@ export function createClient() {
         createSignedUrl: (path: string) => call("storage/signed", { bucket, path }),
       }),
     },
+    functions: {
+      invoke: async (name: string, o: { body?: unknown }) => {
+        const r = await call(`functions/${name}`, o?.body ?? {});
+        return r.error ? { data: null, error: { message: r.error.message, context: { json: async () => r.error } } } : r;
+      },
+    },
     from: (table: string) => ({ select: () => ({ order: () => call("clinics", { table }) }) }),
   };
 }

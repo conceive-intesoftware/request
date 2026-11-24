@@ -7,6 +7,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Db } from "../fake-supabase";
 import { MFA_CODE, PASSWORD, startBridge } from "./bridge";
+// @ts-ignore módulo .mjs sem tipos
+import { buildCsp } from "../../scripts/apply-csp.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (p: string) => readFileSync(resolve(root, p), "utf8");
@@ -42,7 +44,7 @@ await esbuild.build({
     "process.env.NODE_ENV": '"development"',
   },
 });
-writeFileSync(resolve(OUT, "index.html"), `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${/<title>(.*?)<\/title>/.exec(read("index.html"))?.[1] ?? ""}</title><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>`);
+writeFileSync(resolve(OUT, "index.html"), `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${buildCsp({ supabaseUrl: "https://stub.supabase.co" })}"><title>${/<title>(.*?)<\/title>/.exec(read("index.html"))?.[1] ?? ""}</title><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>`);
 console.log("✓ site compilado com esbuild");
 
 // ───────── 2. banco ─────────
@@ -156,6 +158,11 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
       assert.equal(m.v, false, `sem rolagem vertical (${w}px)`);
       assert.equal(m.sbw + m.sbh, 0, `sem barra visível (${w}px)`);
       assert.equal(m.page, false, `sem rolagem horizontal da página (${w}px)`);
+      const same = await visitor.evaluate(() => {
+        const t = document.querySelector(".theme-toggle")!.getBoundingClientRect(), b = document.querySelector(".site-brand")!.getBoundingClientRect(), tabs = document.querySelector(".site-tabs")!.getBoundingClientRect();
+        return { toggleBesideBrand: Math.abs((t.top + t.height / 2) - (b.top + b.height / 2)) < 30, tabsHeight: tabs.height };
+      });
+      assert.equal(same.toggleBesideBrand, true, `botão de tema na mesma linha da marca (${w}px)`);
     }
     await visitor.setViewportSize({ width: 1280, height: 800 });
   });
@@ -468,12 +475,186 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await admin.selectOption("select[aria-label='Papel de Ana Admin']", "PO");
     await admin.waitForSelector("text=Não é possível rebaixar/desativar o último administrador.");
   });
+  await step("equipe: seção 'E-mails automáticos' aparece para o Admin (vazia sem configuração)", async () => {
+    await admin.waitForSelector("h2:has-text('E-mails automáticos')");
+    await admin.waitForSelector("text=Nenhum envio registrado.");
+  });
   await step("clínica nova já aparece no autocomplete do formulário público", async () => {
     const v4 = await newPage();
     await v4.goto(`${BASE}/#/solicitar`);
     await v4.waitForSelector("#clinic");
     await v4.fill("#clinic", "goianinha");
     await v4.waitForSelector("[role=option]:has-text('Med Clínica Goianinha')");
+  });
+
+
+  console.log("v2 — rascunho, roadmap, respostas, CSAT, métricas, importação, tema");
+  await step("rascunho: o que foi digitado volta depois de recarregar a página; descartar limpa", async () => {
+    const d1 = await newPage();
+    await d1.goto(`${BASE}/#/solicitar`);
+    await d1.waitForSelector("#clinic");
+    await d1.fill("#name", "Rafaela Rascunho");
+    await d1.fill("#email", "rafa@exemplo.com");
+    await d1.fill("#desc", "Texto que ainda não foi enviado");
+    await d1.waitForSelector("text=Rascunho salvo automaticamente");
+    await d1.reload();
+    await d1.waitForSelector("text=Recuperamos o rascunho");
+    assert.equal(await d1.inputValue("#name"), "Rafaela Rascunho");
+    assert.equal(await d1.inputValue("#email"), "rafa@exemplo.com");
+    assert.equal(await d1.inputValue("#desc"), "Texto que ainda não foi enviado");
+    await d1.click("button:has-text('Descartar rascunho')");
+    assert.equal(await d1.inputValue("#name"), "");
+    await d1.reload();
+    await d1.waitForSelector("#clinic");
+    assert.equal(await d1.locator("text=Recuperamos o rascunho").count(), 0);
+  });
+  await step("e-mail inválido é recusado no formulário", async () => {
+    const d2 = await newPage();
+    await d2.goto(`${BASE}/#/solicitar`);
+    await d2.waitForSelector("#clinic");
+    await d2.fill("#email", "isso-nao-e-email");
+    await d2.click("button:has-text('Enviar solicitação')");
+    await d2.waitForSelector("#email ~ .error, .error:has-text('e-mail')");
+  });
+
+  const po2 = await newPage();
+  await step("PO publica a solicitação no roadmap (com aviso de privacidade)", async () => {
+    await login(po2, "po@x.com", { firstTime: true });
+    await po2.click(`td:has-text('${TITLE}')`);
+    await po2.waitForSelector("[role=dialog] >> text=Mostrar no roadmap público");
+    await po2.click("[role=dialog] label:has-text('Mostrar no roadmap público') input");
+    await po2.waitForFunction(() => Array.from(document.querySelectorAll("[role=dialog] label.check")).some((l) => /roadmap/.test(l.textContent ?? "") && (l.querySelector("input") as HTMLInputElement).checked));
+    await po2.keyboard.press("Escape");
+    await po2.waitForSelector(`tr:has-text('${TITLE}') >> text=público`);
+  });
+  const voter = await newPage();
+  await step("roadmap: outra pessoa vê só título/descrição, apoia e remove o apoio", async () => {
+    await voter.goto(`${BASE}/#/comunidade`);
+    await voter.waitForSelector(`h2:has-text('${TITLE}')`);
+    const html = await voter.content();
+    assert.ok(!html.includes("Sarah") && !html.includes("99849"), "roadmap não vaza dados pessoais");
+    await voter.click("button:has-text('Também preciso disso')");
+    await voter.waitForSelector("button[aria-pressed=true]");
+    await voter.waitForSelector("p.votes[aria-label='1 apoio']");
+    await voter.reload();
+    await voter.waitForSelector("button[aria-pressed=true]");
+    await voter.click("button[aria-pressed=true]");
+    await voter.waitForSelector("button[aria-pressed=false]");
+    await voter.click("button[aria-pressed=false]");
+    await voter.waitForSelector("p.votes[aria-label='1 apoio']");
+    await snap(voter, "04-roadmap");
+  });
+  await step("o autor não consegue apoiar a própria solicitação", async () => {
+    await visitor.goto(`${BASE}/#/comunidade`);
+    await visitor.waitForSelector(`h2:has-text('${TITLE}')`);
+    await visitor.waitForSelector("text=Seu pedido");
+    assert.equal(await visitor.locator("button:has-text('Também preciso disso')").count(), 0, "autor não tem botão de apoio");
+  });
+  await step("cliente responde na página de acompanhamento e a equipe vê 'Cliente' + 'aguardando resposta'", async () => {
+    await visitor.goto(`${BASE}/#/acompanhar/${tracking}`);
+    await visitor.waitForSelector("#reply");
+    await visitor.fill("#reply", "Segue mais um detalhe: o caso acontece só na unidade 2.");
+    await visitor.click("button:has-text('Enviar resposta')");
+    await visitor.waitForSelector("text=unidade 2");
+    await po2.reload();
+    await po2.waitForSelector(`tr:has-text('${TITLE}') >> text=aguardando resposta`);
+    await po2.click(`td:has-text('${TITLE}')`);
+    await po2.click("[role=dialog] [role=tab]:has-text('Comentários')");
+    await po2.waitForSelector("li.public:has-text('unidade 2') .from-client");
+    await po2.keyboard.press("Escape");
+  });
+  await step("criar tarefa no Redmine grava o vínculo externo", async () => {
+    await po2.click(`td:has-text('${TITLE}')`);
+    await po2.click("[role=dialog] button:has-text('Criar tarefa no Redmine')");
+    await po2.waitForFunction(() => (document.querySelector("[role=dialog] input[aria-label='ID externo']") as HTMLInputElement | null)?.value === "4321");
+    assert.equal(await po2.locator("[role=dialog] button:has-text('Criar tarefa no')").count(), 0, "botões somem depois do vínculo");
+    await po2.keyboard.press("Escape");
+  });
+  await step("CSAT: ao concluir, o cliente avalia com estrelas e a equipe vê a nota", async () => {
+    await po2.click(`td:has-text('${TITLE}')`);
+    await po2.selectOption("#st", "CONCLUIDO");
+    await po2.waitForFunction(() => (document.querySelector("#st") as HTMLSelectElement | null)?.value === "CONCLUIDO");
+    await po2.keyboard.press("Escape");
+    await visitor.goto(`${BASE}/#/acompanhar/${tracking}`);
+    await visitor.reload();
+    await visitor.waitForSelector("h2:has-text('Como foi o atendimento?')");
+    await visitor.click("button[aria-label='4 estrelas']");
+    await visitor.fill("textarea[aria-label='Comentário da avaliação']", "Atendimento rápido");
+    await visitor.click("button:has-text('Enviar avaliação')");
+    await visitor.waitForSelector("text=Alterar avaliação");
+    await po2.reload();
+    await po2.waitForSelector(`tr:has-text('${TITLE}') >> text=★ 4`);
+    await po2.click(`td:has-text('${TITLE}')`);
+    await po2.waitForSelector("[role=dialog] >> text=Atendimento rápido");
+    await po2.keyboard.press("Escape");
+  });
+  await step("métricas: KPIs, gráficos e período", async () => {
+    await po2.click("nav a:has-text('Métricas')");
+    await po2.waitForSelector("h1:has-text('Métricas')");
+    await po2.waitForSelector(".kpi:has-text('Satisfação') strong:has-text('4')");
+    await po2.waitForSelector(".kpi:has-text('Concluídas') strong:has-text('1')");
+    assert.ok(await po2.isVisible("[aria-label='Solicitações por semana'], [role=img][aria-label^='Solicitações por semana']"));
+    await po2.selectOption("#period", "30");
+    await po2.waitForSelector(".kpis");
+    assert.equal(await po2.locator("nav a:has-text('Importar')").count(), 0, "PO não importa");
+    await snap(po2, "05-metricas");
+  });
+  current = po2;
+  await step("SLA: pedido antigo sem resposta aparece marcado, no filtro 'Atraso' e nas métricas", async () => {
+    db.sql(`set session_replication_role = replica; update public.requests set status = 'RECEBIDO', merged_into_id = null, deleted_at = null, created_at = now() - interval '6 days' where pending_clinic_name = 'Hospital de Olhos de Parnamirim';`);
+    await po2.click("nav a:has-text('Solicitações')");
+    await po2.waitForSelector("h1:has-text('Solicitações')");
+    await po2.selectOption("select[aria-label=Atraso]", "stalled");
+    await po2.waitForSelector("text=1 resultado(s)");
+    await po2.waitForSelector("tr:has-text('Hospital de Olhos') .sla-tag:has-text('sem resposta')");
+    await po2.click("button:has-text('Limpar')");
+    await po2.click("nav a:has-text('Métricas')");
+    await po2.waitForSelector(".kpi:has-text('Paradas ou sem resposta') strong:has-text('1')");
+  });
+  await step("importar: admin envia CSV da planilha antiga; repetir não duplica", async () => {
+    current = admin;
+    await admin.goto(`${BASE}/#/admin/importar`);
+    await admin.waitForSelector("h1:has-text('Importar planilha antiga')");
+    const csv = [
+      "Carimbo de data/hora,Clínica,Nome,Cargo,WhatsApp,Módulo,Título,Descrição,Status",
+      '12/03/2025 14:30:00,Kardiomov,Marta Souza,Recepcionista,(84) 99999-1111,Agenda,Bloqueio de horário,"Preciso bloquear horários em lote, por favor",Concluído',
+      "13/03/2025 09:00:00,Kardiomov,João Lima,Médico,sem telefone,Financeiro,Relatório mensal,Gostaria de um relatório mensal por convênio,Novo",
+      "14/03/2025 09:00:00,,Sem Clínica,Médico,(84) 98888-7777,Financeiro,,,Novo",
+    ].join("\n");
+    await admin.setInputFiles("#csv", { name: "planilha.csv", mimeType: "text/csv", buffer: Buffer.from(csv, "utf8") });
+    await admin.waitForSelector("text=2 prontas para importar");
+    await admin.waitForSelector("text=1 com problema");
+    await admin.click("button:has-text('Importar 2 solicitações')");
+    await admin.waitForSelector("text=2 criadas");
+    await admin.setInputFiles("#csv", { name: "planilha.csv", mimeType: "text/csv", buffer: Buffer.from(csv, "utf8") });
+    await admin.waitForSelector("button:has-text('Importar 2 solicitações')");
+    await admin.click("button:has-text('Importar 2 solicitações')");
+    await admin.waitForSelector("text=0 criadas");
+    await admin.click("nav a:has-text('Solicitações')");
+    await admin.waitForSelector("td:has-text('Bloqueio de horário')");
+    assert.equal(await admin.locator("td:has-text('Relatório mensal')").count(), 1);
+  });
+  await step("tema: alterna Automático → Claro → Escuro e lembra depois de recarregar", async () => {
+    const t = await newPage();
+    await t.goto(`${BASE}/#/solicitar`);
+    await t.waitForSelector("button.theme-toggle");
+    await t.click("button.theme-toggle");
+    assert.equal(await t.getAttribute("html", "data-theme"), "light");
+    await t.click("button.theme-toggle");
+    assert.equal(await t.getAttribute("html", "data-theme"), "dark");
+    const bg = await t.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    assert.equal(bg, "rgb(20, 18, 27)");
+    await t.reload();
+    await t.waitForSelector("button.theme-toggle");
+    assert.equal(await t.getAttribute("html", "data-theme"), "dark");
+  });
+  await step("acessibilidade: link 'Pular para o conteúdo' leva o foco ao conteúdo", async () => {
+    const a = await newPage();
+    await a.goto(`${BASE}/#/solicitar`);
+    await a.waitForSelector("a.skip-link");
+    await a.focus("a.skip-link");
+    await a.keyboard.press("Enter");
+    assert.equal(await a.evaluate(() => document.activeElement?.id), "conteudo");
   });
 
   await step("nenhum erro de JavaScript no console durante todo o fluxo", async () => {

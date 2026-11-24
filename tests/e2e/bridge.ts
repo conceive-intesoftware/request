@@ -27,8 +27,11 @@ export function startBridge(db: Db, siteDir: string, port: number): Promise<Serv
     const s = sess(sid);
     const { state, client } = s;
     switch (path) {
-      case "rpc":
-        return client.rpc(body.fn, body.args ?? {});
+      case "rpc": {
+        const out: any = await client.rpc(body.fn, body.args ?? {});
+        if (process.env.E2E_DEBUG && out?.error) console.error("[rpc erro]", body.fn, out.error.message);
+        return out;
+      }
       case "auth/getSession":
         return client.auth.getSession();
       case "auth/anon":
@@ -62,6 +65,13 @@ export function startBridge(db: Db, siteDir: string, port: number): Promise<Serv
         return client.storage.from(body.bucket).upload(body.path, { type: body.type, size: body.size });
       case "storage/signed":
         return client.storage.from(body.bucket).createSignedUrl(body.path, 60);
+      case "functions/external-task": {
+        // Simula a Edge Function: cria um ID falso e grava o vínculo com a identidade de quem chamou.
+        const id = body.system === "REDMINE" ? "4321" : "pf-987";
+        const r = await client.rpc("set_external_ref", { p_id: body.request_id, p_system: body.system, p_external_id: id });
+        if (r.error) return { data: null, error: { message: r.error.message } };
+        return { data: { system: body.system, id }, error: null };
+      }
       case "clinics":
         return client.from("clinics").select("*").order("name");
       default:

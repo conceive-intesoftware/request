@@ -12,7 +12,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
         │                                                │
         ▼                                                ▼
 ┌─────────────────────────────── GitHub Pages ───────────────────────────────┐
-│  React (Vite)  ·  #/solicitar  #/acompanhar  #/login  #/admin      │
+│  React (Vite)  ·  #/solicitar  #/acompanhar  #/comunidade  #/login  #/admin │
 └───────────────┬────────────────────────────────────────────────────────────┘
                 │ supabase-js (chave pública) — só chama funções RPC
                 ▼
@@ -21,10 +21,20 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 │ Postgres: RPCs SECURITY DEFINER ──► checam permissão ──► mascaram PII ──►  │
 │           gravam auditoria; RLS; triggers; audit_logs imutável             │
 │ Storage: bucket privado "attachments" (50 MB, só tipos permitidos)         │
+│ Edge Functions: notify (e-mail via Resend) · external-task (Redmine/Pipefy)│
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Por que foi refeito em relação à versão Next.js:** o GitHub Pages só serve arquivos estáticos. Não existem Server Actions, middleware, rotas de API nem Prisma lá. Toda a regra de negócio e segurança (RBAC, auditoria, mascaramento, rate limit, protocolo) agora vive **dentro do Postgres**, onde não dá para burlar pelo navegador.
+
+## Recursos da versão 2
+- **Rascunho automático** da solicitação (neste navegador, 7 dias; anexos não são guardados).
+- **E-mail opcional** do cliente: recebe o link de acompanhamento e avisos de andamento; a equipe recebe aviso de nova solicitação e de resposta do cliente.
+- **Roadmap público** (`#/comunidade`) com votação "Também preciso disso" — só entra o que o PO/Admin publicar; sem dados pessoais.
+- **Respostas do cliente** na página de acompanhamento (com anexos) e **pesquisa de satisfação** (1 a 5 estrelas) ao concluir.
+- **Métricas** (volume, tempos, satisfação, apoios) e **importação** da planilha antiga em CSV (admin).
+- **Criar tarefa no Redmine/Pipefy** direto do detalhe da solicitação.
+- **Tema** automático/claro/escuro, link "Pular para o conteúdo", **CSP** e proteção contra iframe.
 
 ## Segurança em camadas
 1. **Nenhuma tabela é acessível diretamente** por `anon`/`authenticated` (exceto leitura de clínicas/auditoria para a equipe via RLS). Tudo passa por RPCs.
@@ -42,6 +52,11 @@ supabase/migrations/…_init.sql   Tabelas, RBAC, triggers, RLS, RPCs, Storage  
 supabase/bootstrap_admin.sql     Libera o 1º administrador
 supabase/seed_clinics.sql        (opcional) clínicas iniciais
 supabase/cleanup_anonymous_users.sql   Manutenção mensal
+supabase/configurar_emails.sql   Liga os e-mails automáticos (opcional)
+supabase/agendar_limpeza.sql     Agenda a limpeza mensal com pg_cron (opcional)
+supabase/agendar_resumo_sla.sql  Resumo diário de pedidos parados (opcional)
+supabase/functions/              notify (Resend) e external-task (Redmine/Pipefy)
+scripts/apply-csp.mjs            Insere a Content-Security-Policy no build
 supabase/tests/                  Mock do Supabase + suíte de testes do banco
 src/lib/                         api.ts (RPCs), validação, telefone, CSV, auth, roteador
 src/components/                  PublicShell (cabeçalho com abas), AttachmentPicker (Ctrl+V, arrastar, escolher)
@@ -61,6 +76,7 @@ npm run dev
 ```bash
 npm run typecheck
 npm run test:unit
+npm run test:functions
 # Os de banco/contrato precisam de um Postgres LOCAL descartável com usuário superuser
 # (NUNCA aponte para o seu projeto Supabase):
 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres npm run test:db

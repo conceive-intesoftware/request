@@ -158,6 +158,54 @@ create index if not exists audit_user_idx   on public.audit_logs (user_id, creat
 create index if not exists audit_action_idx on public.audit_logs (action, created_at desc);
 
 -- ---------------------------------------------------------------------
+-- 2b. Evolução do esquema (v2): e-mail, roadmap público, votos, resposta do cliente, pesquisa, importação
+-- ---------------------------------------------------------------------
+-- pg_net envia os e-mails automáticos (opcional; se não existir, o sistema funciona sem e-mail)
+do $$ begin create extension if not exists pg_net;
+exception when others then raise notice 'pg_net indisponível: e-mails automáticos ficarão desligados'; end $$;
+
+alter table public.requests add column if not exists requester_email text;
+alter table public.requests add column if not exists is_public       boolean not null default false;
+alter table public.requests add column if not exists csat_score      smallint;
+alter table public.requests add column if not exists csat_comment    text;
+alter table public.requests add column if not exists csat_at         timestamptz;
+alter table public.requests add column if not exists completed_at    timestamptz;
+alter table public.requests add column if not exists origin          text not null default 'FORM';
+alter table public.requests add column if not exists import_key      text;
+do $$ begin
+  alter table public.requests add constraint requests_email_chk
+    check (requester_email is null or (length(requester_email) <= 160 and requester_email ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$'));
+exception when duplicate_object then null; end $$;
+do $$ begin alter table public.requests add constraint requests_csat_chk
+    check ((csat_score is null or csat_score between 1 and 5) and (csat_comment is null or length(csat_comment) <= 1000));
+exception when duplicate_object then null; end $$;
+do $$ begin alter table public.requests add constraint requests_origin_chk check (origin in ('FORM', 'IMPORT'));
+exception when duplicate_object then null; end $$;
+create unique index if not exists requests_import_key_uq on public.requests (import_key) where import_key is not null;
+create index if not exists requests_public_idx on public.requests (created_at desc) where is_public and deleted_at is null;
+update public.requests set completed_at = updated_at where status = 'CONCLUIDO' and completed_at is null;
+
+alter table public.request_comments alter column author_id drop not null;
+alter table public.request_comments add column if not exists author_kind text not null default 'STAFF';
+alter table public.request_comments alter column created_at set default clock_timestamp();   -- ordem estável mesmo dentro de uma transação
+do $$ begin
+  alter table public.request_comments add constraint request_comments_author_chk
+    check ((author_kind = 'STAFF' and author_id is not null)
+        or (author_kind = 'CLIENT' and author_id is null and not is_internal));
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.request_votes (
+  request_id  uuid not null references public.requests(id),
+  user_id     uuid not null,
+  created_at  timestamptz not null default now(),
+  primary key (request_id, user_id)
+);
+create index if not exists request_votes_user_idx on public.request_votes (user_id, created_at desc);
+
+-- configurações internas (URL e segredo do webhook de e-mail). Nunca exposta pela API.
+create table if not exists private.app_settings (key text primary key, value text not null);
+
+-- ---------------------------------------------------------------------
 -- 3. RBAC (dirigido por dados)
 -- ---------------------------------------------------------------------
 insert into public.role_permissions (role, permission)
@@ -178,6 +226,12 @@ select r.role::public.app_role, r.permission from (values
 
   ('DEV_VIEWER','request:read'), ('DEV_VIEWER','comment:internal')
 ) as r(role, permission)
+on conflict do nothing;
+
+insert into public.role_permissions (role, permission) values
+  ('ADMIN','request:publish'), ('PO','request:publish'),
+  ('ADMIN','metrics:read'), ('PO','metrics:read'), ('SUPPORT','metrics:read'),
+  ('ADMIN','import:run')
 on conflict do nothing;
 
 -- ---------------------------------------------------------------------
@@ -261,6 +315,11 @@ returns text language sql immutable set search_path = '' as $$
   select '(**) *****-' || right(regexp_replace(coalesce(p, ''), '\D', '', 'g'), 4)
 $$;
 
+create or replace function private.mask_email(p text)
+returns text language sql immutable set search_path = '' as $$
+  select case when p is null then null else left(split_part(p, '@', 1), 1) || '***@' || split_part(p, '@', 2) end
+$$;
+
 create or replace function private.write_audit(
   p_action public.audit_action, p_entity text, p_entity_id text,
   p_prev jsonb, p_new jsonb)
@@ -290,11 +349,16 @@ returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if tg_op = 'INSERT' then
     if new.protocol is null or new.protocol = '' then new.protocol := private.next_protocol(); end if;
+    if new.status = 'CONCLUIDO' and new.completed_at is null then new.completed_at := now(); end if;
   else
     new.protocol := old.protocol;                 -- nunca mudam
     new.tracking_token := old.tracking_token;
     new.created_at := old.created_at;
+    new.origin := old.origin;
+    new.import_key := old.import_key;
     new.updated_at := now();
+    if new.status = 'CONCLUIDO' and old.status <> 'CONCLUIDO' then new.completed_at := now();
+    elsif new.status <> 'CONCLUIDO' then new.completed_at := null; end if;
   end if;
   return new;
 end $$;
@@ -356,6 +420,80 @@ drop trigger if exists trg_audit_logs_no_truncate on public.audit_logs;
 create trigger trg_audit_logs_no_truncate before truncate on public.audit_logs
   for each statement execute function private.audit_immutable();
 
+-- 5.5 e-mails automáticos (via pg_net -> Edge Function "notify"). Silencioso se não configurado.
+-- Registro das tentativas de e-mail (sem o texto nem o endereço): permite achar falhas que antes eram silenciosas.
+create table if not exists private.notify_log (
+  id         bigserial primary key,
+  created_at timestamptz not null default clock_timestamp(),
+  event      text not null,
+  protocol   text,
+  outcome    text not null check (outcome in ('ENFILEIRADO', 'ERRO')),
+  net_id     bigint,
+  detail     text
+);
+create index if not exists notify_log_created_idx on private.notify_log (created_at desc);
+
+create or replace function private.notify_event(p_payload jsonb)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_url text; v_secret text; v_id bigint;
+begin
+  select s.value into v_url    from private.app_settings s where s.key = 'notify_url';
+  select s.value into v_secret from private.app_settings s where s.key = 'notify_secret';
+  if coalesce(v_url, '') = '' or coalesce(v_secret, '') = '' then return; end if;
+  begin
+    v_id := net.http_post(url := v_url, body := p_payload,
+      headers := jsonb_build_object('Content-Type', 'application/json', 'x-webhook-secret', v_secret));
+    insert into private.notify_log (event, protocol, outcome, net_id)
+    values (coalesce(p_payload ->> 'event', '?'), p_payload ->> 'protocol', 'ENFILEIRADO', v_id);
+  exception when others then
+    -- e-mail jamais pode impedir o envio ou a atualização de uma solicitação
+    begin
+      insert into private.notify_log (event, protocol, outcome, detail)
+      values (coalesce(p_payload ->> 'event', '?'), p_payload ->> 'protocol', 'ERRO', left(sqlerrm, 300));
+    exception when others then null;
+    end;
+  end;
+end $$;
+
+create or replace function private.trg_notify()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare r public.requests; v jsonb;
+begin
+  if tg_table_name = 'requests' then
+    if new.origin <> 'FORM' then return new; end if;
+    if tg_op = 'INSERT' then
+      v := jsonb_build_object('event', 'request_created', 'protocol', new.protocol, 'title', new.title,
+             'module', new.module, 'type', new.type,
+             'clinic_name', coalesce((select c.name from public.clinics c where c.id = new.clinic_id), new.pending_clinic_name),
+             'client_email', new.requester_email, 'tracking_token', new.tracking_token);
+    elsif new.status is distinct from old.status and new.status <> 'ARQUIVADO' and new.requester_email is not null then
+      v := jsonb_build_object('event', 'status_changed', 'protocol', new.protocol, 'title', new.title,
+             'status', new.status, 'previous_status', old.status,
+             'client_email', new.requester_email, 'tracking_token', new.tracking_token);
+    else
+      return new;
+    end if;
+  else
+    select * into r from public.requests where id = new.request_id;
+    if new.author_kind = 'CLIENT' then
+      v := jsonb_build_object('event', 'client_reply', 'protocol', r.protocol, 'title', r.title, 'body', new.body);
+    elsif not new.is_internal and r.requester_email is not null then
+      v := jsonb_build_object('event', 'comment_public', 'protocol', r.protocol, 'title', r.title, 'body', new.body,
+             'client_email', r.requester_email, 'tracking_token', r.tracking_token);
+    else
+      return new;
+    end if;
+  end if;
+  perform private.notify_event(v);
+  return new;
+end $$;
+drop trigger if exists trg_notify_ins on public.requests;
+create trigger trg_notify_ins after insert on public.requests for each row execute function private.trg_notify();
+drop trigger if exists trg_notify_upd on public.requests;
+create trigger trg_notify_upd after update of status on public.requests for each row execute function private.trg_notify();
+drop trigger if exists trg_notify_cmt on public.request_comments;
+create trigger trg_notify_cmt after insert on public.request_comments for each row execute function private.trg_notify();
+
 -- ---------------------------------------------------------------------
 -- 6. RLS (defesa em profundidade; o acesso real é via RPC)
 -- ---------------------------------------------------------------------
@@ -370,6 +508,9 @@ alter table public.request_comments   enable row level security;
 alter table public.tags               enable row level security;
 alter table public.request_tags       enable row level security;
 alter table public.audit_logs         enable row level security;
+alter table public.request_votes      enable row level security;
+alter table private.app_settings      enable row level security;
+alter table private.notify_log        enable row level security;
 
 drop policy if exists clinics_staff_read on public.clinics;
 create policy clinics_staff_read on public.clinics for select to authenticated
@@ -442,18 +583,20 @@ begin
     where u.clinic_id = p_clinic_id order by u.name;
 end $$;
 
+drop function if exists public.submit_request(uuid, uuid, text, text, public.requester_role, text, public.system_module, public.request_type, text, text, text[]);
 create or replace function public.submit_request(
   p_clinic_id uuid, p_unit_id uuid, p_pending_clinic_name text,
   p_requester_name text, p_requester_role public.requester_role, p_whatsapp text,
   p_module public.system_module, p_type public.request_type,
   p_title text, p_description text,
-  p_attachment_paths text[] default '{}')
+  p_attachment_paths text[] default '{}',
+  p_requester_email text default null)
 returns table (protocol text, tracking_token text)
 language plpgsql security definer set search_path = '' as $$
 declare
   v_uid uuid := (select auth.uid());
   v_phone text; v_clinic uuid := p_clinic_id; v_unit uuid := p_unit_id; v_pending text;
-  v_req public.requests; v_path text; v_obj record;
+  v_req public.requests; v_path text; v_obj record; v_email text;
 begin
   if v_uid is null then raise exception 'not_authenticated' using errcode = '28000'; end if;
 
@@ -470,6 +613,8 @@ begin
 
   v_phone := private.normalize_br_phone(p_whatsapp);
   if v_phone is null then raise exception 'invalid_phone'; end if;
+  v_email := nullif(lower(trim(coalesce(p_requester_email, ''))), '');
+  if v_email is not null and (length(v_email) > 160 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then raise exception 'invalid_email'; end if;
 
   if v_clinic is not null then
     if not exists (select 1 from public.clinics c where c.id = v_clinic and c.active) then
@@ -487,9 +632,9 @@ begin
   if coalesce(array_length(p_attachment_paths, 1), 0) > 5 then raise exception 'too_many_attachments'; end if;
 
   insert into public.requests (clinic_id, unit_id, pending_clinic_name, requester_name, requester_role,
-                               whatsapp_e164, title, description, module, type, submitted_by)
+                               whatsapp_e164, requester_email, title, description, module, type, submitted_by)
   values (v_clinic, v_unit, v_pending, trim(p_requester_name), p_requester_role,
-          v_phone, trim(p_title), trim(p_description), p_module, p_type, v_uid)
+          v_phone, v_email, trim(p_title), trim(p_description), p_module, p_type, v_uid)
   returning * into v_req;
 
   foreach v_path in array coalesce(p_attachment_paths, '{}') loop
@@ -525,7 +670,10 @@ begin
     'type', r.type,
     'created_at', r.created_at,
     'updated_at', r.updated_at,
-    'comments', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'body', c.body, 'created_at', c.created_at)
+    'has_email', r.requester_email is not null,
+    'csat_score', r.csat_score, 'csat_comment', r.csat_comment,
+    'comments', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'body', c.body, 'created_at', c.created_at,
+                                                              'from_client', c.author_kind = 'CLIENT')
                                            order by c.created_at), '[]'::jsonb)
                  from public.request_comments c where c.request_id = r.id and not c.is_internal));
 end $$;
@@ -559,6 +707,58 @@ begin
 end $$;
 
 -- Filtro compartilhado por list_requests / export_requests (não exposto)
+-- ───────── SLA: solicitações sem resposta ou paradas ─────────
+-- Prazos em dias corridos, ajustáveis em private.app_settings: sla_first_days (padrão 3) e sla_idle_days (padrão 15).
+--   SEM_RESPOSTA: "Recebido" sem resposta pública da equipe, ou cliente respondeu e a equipe não voltou, além do prazo.
+--   PARADA: "Em análise" ou "Em desenvolvimento" sem nenhuma movimentação (status ou comentário da equipe) além do prazo.
+-- Não avalia: concluídas, arquivadas, mescladas e importadas da planilha antiga.
+create or replace function private.sla_state(r public.requests)
+returns text language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_first int := coalesce((select nullif(s.value, '')::int from private.app_settings s where s.key = 'sla_first_days'), 3);
+  v_idle  int := coalesce((select nullif(s.value, '')::int from private.app_settings s where s.key = 'sla_idle_days'), 15);
+  v_last_kind text; v_last_at timestamptz; v_staff_touch timestamptz; v_staff_public boolean;
+begin
+  if r.deleted_at is not null or r.merged_into_id is not null or r.origin = 'IMPORT'
+     or r.status in ('CONCLUIDO', 'ARQUIVADO') then
+    return null;
+  end if;
+  select c.author_kind, c.created_at into v_last_kind, v_last_at
+    from public.request_comments c where c.request_id = r.id and not c.is_internal
+    order by c.created_at desc, c.id desc limit 1;
+  if v_last_kind = 'CLIENT' and v_last_at < now() - make_interval(days => v_first) then return 'SEM_RESPOSTA'; end if;
+  if r.status = 'RECEBIDO' then
+    select exists (select 1 from public.request_comments c where c.request_id = r.id and c.author_kind = 'STAFF' and not c.is_internal)
+      into v_staff_public;
+    if not v_staff_public and r.created_at < now() - make_interval(days => v_first) then return 'SEM_RESPOSTA'; end if;
+  elsif r.status in ('EM_ANALISE_PRODUTO', 'EM_DESENVOLVIMENTO') then
+    select max(c.created_at) into v_staff_touch from public.request_comments c where c.request_id = r.id and c.author_kind = 'STAFF';
+    if greatest(r.updated_at, coalesce(v_staff_touch, r.updated_at)) < now() - make_interval(days => v_idle) then return 'PARADA'; end if;
+  end if;
+  return null;
+end $$;
+
+-- Resumo para a equipe (chamado pelo agendamento diário; só envia se houver algo a tratar).
+create or replace function private.send_sla_digest()
+returns int language plpgsql security definer set search_path = '' as $$
+declare v_items jsonb; v_n int;
+begin
+  select count(*), coalesce(jsonb_agg(jsonb_build_object('protocol', x.protocol, 'title', left(x.title, 120), 'sla', x.sla,
+                      'days', x.days) order by x.created_at) filter (where x.rn <= 30), '[]'::jsonb)
+    into v_n, v_items
+  from (select r.protocol, r.title, r.created_at, private.sla_state(r) as sla,
+               extract(day from now() - r.created_at)::int as days,
+               row_number() over (order by r.created_at) as rn
+        from public.requests r where r.deleted_at is null) x
+  where x.sla is not null;
+  if v_n > 0 then
+    perform private.notify_event(jsonb_build_object('event', 'sla_digest', 'protocol', 'RESUMO',
+      'title', v_n || case when v_n = 1 then ' solicitação precisa' else ' solicitações precisam' end || ' de atenção',
+      'count', v_n, 'items', v_items));
+  end if;
+  return v_n;
+end $$;
+
 create or replace function private.filtered_requests(p_filters jsonb)
 returns setof public.requests language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -571,6 +771,7 @@ declare
   v_module public.system_module := nullif(f ->> 'module', '')::public.system_module;
   v_status public.request_status := nullif(f ->> 'status', '')::public.request_status;
   v_priority public.priority_level := nullif(f ->> 'priority', '')::public.priority_level;
+  v_sla boolean := coalesce(f ->> 'sla', '') = 'stalled';
   v_from timestamptz := case when nullif(f ->> 'from', '') is null then null
                              else ((f ->> 'from')::date)::timestamp at time zone 'America/Fortaleza' end;
   v_to timestamptz := case when nullif(f ->> 'to', '') is null then null
@@ -589,6 +790,7 @@ begin
       and (v_priority is null or r.priority = v_priority)
       and (v_from is null or r.created_at >= v_from)
       and (v_to is null or r.created_at < v_to)
+      and (not v_sla or private.sla_state(r) is not null)
       and (v_pat is null or r.title ilike v_pat or r.protocol ilike v_pat
            or (v_pii and r.requester_name ilike v_pat))
     order by r.created_at desc;
@@ -616,6 +818,10 @@ begin
         'pii_masked', not v_pii,
         'clinic_id', r.clinic_id, 'clinic_name', c.name, 'pending_clinic_name', r.pending_clinic_name,
         'rice_score', r.rice_score, 'merged_into_id', r.merged_into_id,
+        'is_public', r.is_public, 'csat_score', r.csat_score, 'sla', private.sla_state(r),
+        'votes', (select count(*) from public.request_votes v where v.request_id = r.id),
+        'awaiting_reply', coalesce((select c.author_kind = 'CLIENT' from public.request_comments c
+                                     where c.request_id = r.id and not c.is_internal order by c.created_at desc, c.id desc limit 1), false),
         'duplicates_count', (select count(*) from public.requests d where d.merged_into_id = r.id and d.deleted_at is null),
         'created_at', r.created_at) as j
     from private.filtered_requests(p_filters) r
@@ -638,7 +844,7 @@ begin
   -- quem vê dado pessoal sem máscara deixa rastro (LGPD)
   if v_pii then
     perform private.write_audit('VIEW_SENSITIVE', 'requests', r.id::text, null,
-      jsonb_build_object('fields', jsonb_build_array('requester_name', 'whatsapp_e164')));
+      jsonb_build_object('fields', jsonb_build_array('requester_name', 'whatsapp_e164', 'requester_email')));
   end if;
 
   if private.can('audit:read') then
@@ -646,8 +852,8 @@ begin
         'id', a.id, 'action', a.action, 'entity', a.entity, 'created_at', a.created_at,
         'ip', a.ip_address, 'user_agent', a.user_agent,
         'user', coalesce(p.name || ' (' || p.role::text || ')', 'Cliente / sistema'),
-        'previous', case when v_pii then a.previous_value else a.previous_value - 'requester_name' - 'whatsapp_e164' end,
-        'next', case when v_pii then a.new_value else a.new_value - 'requester_name' - 'whatsapp_e164' end)
+        'previous', case when v_pii then a.previous_value else a.previous_value - 'requester_name' - 'whatsapp_e164' - 'requester_email' end,
+        'next', case when v_pii then a.new_value else a.new_value - 'requester_name' - 'whatsapp_e164' - 'requester_email' end)
       order by a.created_at desc, a.id desc), '[]'::jsonb)
     into v_audit
     from (
@@ -665,7 +871,12 @@ begin
     'requester_name', case when v_pii then r.requester_name else private.mask_name(r.requester_name) end,
     'requester_role', r.requester_role,
     'whatsapp', case when v_pii then r.whatsapp_e164 else private.mask_phone(r.whatsapp_e164) end,
+    'requester_email', case when v_pii then r.requester_email else private.mask_email(r.requester_email) end,
     'pii_masked', not v_pii,
+    'is_public', r.is_public, 'origin', r.origin,
+    'votes', (select count(*) from public.request_votes v where v.request_id = r.id),
+    'csat', jsonb_build_object('score', r.csat_score, 'comment', r.csat_comment, 'at', r.csat_at),
+    'completed_at', r.completed_at,
     'clinic_id', r.clinic_id,
     'clinic_name', (select c.name from public.clinics c where c.id = r.clinic_id),
     'unit_name', (select u.name from public.clinic_units u where u.id = r.unit_id),
@@ -681,7 +892,7 @@ begin
                         order by a.created_at), '[]'::jsonb)
                     from public.request_attachments a where a.request_id = r.id),
     'comments', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'body', c.body, 'is_internal', c.is_internal,
-                        'created_at', c.created_at, 'author_name', p.name, 'author_role', p.role)
+                        'created_at', c.created_at, 'author_name', p.name, 'author_role', p.role, 'author_kind', c.author_kind)
                         order by c.created_at), '[]'::jsonb)
                  from public.request_comments c left join public.profiles p on p.id = c.author_id
                  where c.request_id = r.id),
@@ -830,6 +1041,262 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------
+-- 9b. Roadmap público, votos, resposta do cliente, pesquisa, métricas, importação (v2)
+-- ---------------------------------------------------------------------
+create or replace function public.set_request_public(p_id uuid, p_public boolean)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require('request:publish');
+  if coalesce(p_public, false) and exists (select 1 from public.requests where id = p_id and merged_into_id is not null) then
+    raise exception 'invalid_publish';
+  end if;
+  update public.requests set is_public = coalesce(p_public, false) where id = p_id and deleted_at is null;
+  if not found then raise exception 'not_found'; end if;
+end $$;
+
+-- Lista pública (sem login): só o que a equipe publicou; nada de dados pessoais.
+create or replace function public.list_public_requests(
+  p_search text default null, p_module public.system_module default null, p_page int default 1)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_uid uuid := (select auth.uid());
+  v_pat text; v_total bigint; v_rows jsonb;
+  v_page int := greatest(coalesce(p_page, 1), 1);
+begin
+  if nullif(trim(p_search), '') is not null then
+    v_pat := '%' || replace(replace(replace(trim(p_search), '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  end if;
+  select count(*) into v_total from public.requests r
+   where r.is_public and r.deleted_at is null and r.merged_into_id is null
+     and (p_module is null or r.module = p_module)
+     and (v_pat is null or r.title ilike v_pat or r.description ilike v_pat);
+  select coalesce(jsonb_agg(x.j order by x.votes desc, x.created_at desc), '[]'::jsonb) into v_rows from (
+    select r.created_at, (select count(*) from public.request_votes v where v.request_id = r.id) as votes,
+      jsonb_build_object(
+        'id', r.id, 'protocol', r.protocol, 'title', r.title, 'excerpt', left(r.description, 280),
+        'module', r.module, 'type', r.type, 'status', r.status, 'created_at', r.created_at,
+        'votes', (select count(*) from public.request_votes v where v.request_id = r.id),
+        'voted_by_me', v_uid is not null and exists (select 1 from public.request_votes v where v.request_id = r.id and v.user_id = v_uid),
+        'mine', v_uid is not null and r.submitted_by = v_uid) as j
+    from public.requests r
+    where r.is_public and r.deleted_at is null and r.merged_into_id is null
+      and (p_module is null or r.module = p_module)
+      and (v_pat is null or r.title ilike v_pat or r.description ilike v_pat)
+    order by (select count(*) from public.request_votes v where v.request_id = r.id) desc, r.created_at desc
+    offset (v_page - 1) * 20 limit 20
+  ) x;
+  return jsonb_build_object('total', v_total, 'page', v_page, 'page_size', 20, 'rows', v_rows);
+end $$;
+
+create or replace function public.vote_request(p_request_id uuid)
+returns int language plpgsql security definer set search_path = '' as $$
+declare v_uid uuid := (select auth.uid()); r public.requests; v_n int;
+begin
+  if v_uid is null then raise exception 'not_authenticated' using errcode = '28000'; end if;
+  select * into r from public.requests where id = p_request_id and is_public and deleted_at is null and merged_into_id is null;
+  if not found then raise exception 'not_found'; end if;
+  if r.submitted_by = v_uid then raise exception 'invalid_vote'; end if;     -- o próprio pedido já conta
+  if (select count(*) from public.request_votes v where v.user_id = v_uid and v.created_at > now() - interval '1 hour') >= 60 then
+    raise exception 'rate_limited' using errcode = 'P0001';
+  end if;
+  insert into public.request_votes (request_id, user_id) values (r.id, v_uid) on conflict do nothing;
+  select count(*) into v_n from public.request_votes v where v.request_id = r.id;
+  return v_n;
+end $$;
+
+create or replace function public.unvote_request(p_request_id uuid)
+returns int language plpgsql security definer set search_path = '' as $$
+declare v_uid uuid := (select auth.uid()); v_n int;
+begin
+  if v_uid is null then raise exception 'not_authenticated' using errcode = '28000'; end if;
+  delete from public.request_votes where request_id = p_request_id and user_id = v_uid;
+  select count(*) into v_n from public.request_votes v where v.request_id = p_request_id;
+  return v_n;
+end $$;
+
+-- Resposta do cliente na página de acompanhamento (precisa do token E de uma sessão anônima validada pelo CAPTCHA).
+create or replace function public.add_client_comment(p_token text, p_body text, p_attachment_paths text[] default '{}')
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_uid uuid := (select auth.uid()); r public.requests; v_id uuid; v_path text; v_obj record;
+begin
+  if v_uid is null then raise exception 'not_authenticated' using errcode = '28000'; end if;
+  if p_token is null or p_token !~ '^[0-9a-f]{48}$' then raise exception 'not_found'; end if;
+  select * into r from public.requests where tracking_token = p_token;
+  if not found then raise exception 'not_found'; end if;
+  if r.deleted_at is not null then raise exception 'closed_request'; end if;
+  if length(trim(coalesce(p_body, ''))) not between 1 and 4000 then raise exception 'invalid_comment'; end if;
+  if coalesce(array_length(p_attachment_paths, 1), 0) > 5 then raise exception 'too_many_attachments'; end if;
+  if (select count(*) from public.request_comments c where c.request_id = r.id and c.author_kind = 'CLIENT' and c.created_at > now() - interval '10 minutes') >= 5
+     or (select count(*) from public.request_comments c where c.request_id = r.id and c.author_kind = 'CLIENT') >= 60 then
+    raise exception 'rate_limited' using errcode = 'P0001';
+  end if;
+
+  insert into public.request_comments (request_id, author_id, author_kind, body, is_internal)
+  values (r.id, null, 'CLIENT', trim(p_body), false) returning id into v_id;
+
+  foreach v_path in array coalesce(p_attachment_paths, '{}') loop
+    if v_path not like v_uid::text || '/%' then raise exception 'invalid_attachment'; end if;
+    if exists (select 1 from public.request_attachments a where a.storage_path = v_path) then raise exception 'invalid_attachment'; end if;
+    select o.name, o.metadata into v_obj from storage.objects o where o.bucket_id = 'attachments' and o.name = v_path;
+    if not found then raise exception 'invalid_attachment'; end if;
+    insert into public.request_attachments (request_id, file_name, mime_type, size_bytes, storage_path)
+    values (r.id,
+            left(case when position('__' in v_path) > 0 then substr(v_path, position('__' in v_path) + 2) else v_path end, 120),
+            coalesce(v_obj.metadata ->> 'mimetype', 'application/octet-stream'),
+            coalesce((v_obj.metadata ->> 'size')::bigint, 0), v_path);
+  end loop;
+  return v_id;
+end $$;
+
+-- Pesquisa de satisfação (nota 1 a 5) — só depois de concluída; quem tem o token pode (re)avaliar.
+create or replace function public.rate_request(p_token text, p_score int, p_comment text default null)
+returns void language plpgsql security definer set search_path = '' as $$
+declare r public.requests;
+begin
+  if p_token is null or p_token !~ '^[0-9a-f]{48}$' then raise exception 'not_found'; end if;
+  select * into r from public.requests where tracking_token = p_token and deleted_at is null;
+  if not found then raise exception 'not_found'; end if;
+  if r.status <> 'CONCLUIDO' then raise exception 'not_rateable'; end if;
+  if p_score is null or p_score not between 1 and 5 then raise exception 'invalid_score'; end if;
+  if length(coalesce(p_comment, '')) > 1000 then raise exception 'invalid_comment'; end if;
+  update public.requests set csat_score = p_score, csat_comment = nullif(trim(p_comment), ''), csat_at = now() where id = r.id;
+end $$;
+
+-- Métricas (sem dados pessoais). p_days = 0 -> todo o período.
+create or replace function public.get_metrics(p_days int default 90)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_since timestamptz := case when coalesce(p_days, 0) > 0 then now() - make_interval(days => p_days) else '-infinity'::timestamptz end;
+  v_wk0 date := (date_trunc('week', now() at time zone 'America/Fortaleza'))::date;
+  v_out jsonb;
+begin
+  perform private.require('metrics:read');
+  with base as (
+    select r.* from public.requests r where r.deleted_at is null and r.created_at >= v_since
+  ), first_resp as (
+    select b.id, extract(epoch from (min(c.created_at) - b.created_at)) / 3600.0 as hrs
+    from base b join public.request_comments c on c.request_id = b.id and c.author_kind = 'STAFF' and not c.is_internal
+    where b.origin = 'FORM' group by b.id, b.created_at
+  )
+  select jsonb_build_object(
+    'days', coalesce(p_days, 0),
+    'total', (select count(*) from base),
+    'open', (select count(*) from base where status <> 'CONCLUIDO'),
+    'completed', (select count(*) from base where status = 'CONCLUIDO'),
+    'completion_rate', (select round(100.0 * count(*) filter (where status = 'CONCLUIDO') / nullif(count(*), 0), 1) from base),
+    'awaiting_reply', (select count(*) from base b where coalesce((select c.author_kind = 'CLIENT' from public.request_comments c
+                         where c.request_id = b.id and not c.is_internal order by c.created_at desc, c.id desc limit 1), false)),
+    'stalled', (select count(*) from base b join public.requests rr on rr.id = b.id where private.sla_state(rr) is not null),
+    'avg_first_response_hours', (select round(avg(hrs)::numeric, 1) from first_resp),
+    'avg_resolution_days', (select round((avg(extract(epoch from (completed_at - created_at))) / 86400.0)::numeric, 1)
+                            from base where status = 'CONCLUIDO' and origin = 'FORM' and completed_at is not null),
+    'by_status', (select coalesce(jsonb_agg(jsonb_build_object('key', k, 'count', n) order by n desc), '[]'::jsonb)
+                  from (select status::text k, count(*) n from base group by 1) s),
+    'by_module', (select coalesce(jsonb_agg(jsonb_build_object('key', k, 'count', n) order by n desc), '[]'::jsonb)
+                  from (select module::text k, count(*) n from base group by 1) s),
+    'by_type',   (select coalesce(jsonb_agg(jsonb_build_object('key', k, 'count', n) order by n desc), '[]'::jsonb)
+                  from (select type::text k, count(*) n from base group by 1) s),
+    'top_clinics', (select coalesce(jsonb_agg(jsonb_build_object('name', k, 'count', n) order by n desc, k), '[]'::jsonb)
+                    from (select coalesce(c.name, b.pending_clinic_name, '—') k, count(*) n
+                          from base b left join public.clinics c on c.id = b.clinic_id group by 1 order by 2 desc, 1 limit 10) s),
+    'weekly', (select jsonb_agg(jsonb_build_object('week', w.d, 'created', (select count(*) from public.requests r
+                 where r.deleted_at is null and (r.created_at at time zone 'America/Fortaleza')::date >= w.d
+                   and (r.created_at at time zone 'America/Fortaleza')::date < w.d + 7),
+               'completed', (select count(*) from public.requests r where r.deleted_at is null and r.completed_at is not null
+                 and (r.completed_at at time zone 'America/Fortaleza')::date >= w.d
+                 and (r.completed_at at time zone 'America/Fortaleza')::date < w.d + 7)) order by w.d)
+               from (select (v_wk0 - (i * 7))::date as d from generate_series(11, 0, -1) i) w),
+    'csat', jsonb_build_object(
+      'count', (select count(*) from base where csat_score is not null),
+      'avg', (select round(avg(csat_score)::numeric, 2) from base where csat_score is not null),
+      'distribution', (select jsonb_agg(jsonb_build_object('score', g, 'count', (select count(*) from base where csat_score = g)) order by g)
+                       from generate_series(1, 5) g)),
+    'votes_total', (select count(*) from public.request_votes v join base b on b.id = v.request_id),
+    'top_voted', (select coalesce(jsonb_agg(jsonb_build_object('protocol', t.protocol, 'title', t.title, 'votes', t.n) order by t.n desc), '[]'::jsonb)
+                  from (select b.protocol, b.title, count(*) n from base b join public.request_votes v on v.request_id = b.id
+                        group by b.id, b.protocol, b.title order by 3 desc limit 5) t)
+  ) into v_out;
+  return v_out;
+end $$;
+
+-- Importação da planilha antiga (lotes de até 200 linhas). Repetir o mesmo lote não duplica (import_key).
+create or replace function public.admin_import_requests(p_rows jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_row jsonb; v_idx int; v_ins int := 0; v_skip int := 0; v_errs jsonb := '[]'::jsonb; v_n int;
+  v_key text; v_name text; v_title text; v_desc text; v_clinic uuid; v_unit uuid; v_pending text; v_cname text;
+  v_phone text; v_bad_phone boolean; v_email text; v_created timestamptz; v_status public.request_status;
+  v_id uuid;
+begin
+  perform private.require('import:run');
+  if jsonb_typeof(p_rows) <> 'array' then raise exception 'invalid_input'; end if;
+  if jsonb_array_length(p_rows) > 200 then raise exception 'too_many_rows'; end if;
+
+  for v_row, v_idx in select e, (o - 1)::int from jsonb_array_elements(p_rows) with ordinality as t(e, o) loop
+    begin
+      v_key := nullif(trim(v_row ->> 'key'), '');
+      v_name := trim(coalesce(v_row ->> 'name', ''));
+      v_title := trim(coalesce(v_row ->> 'title', ''));
+      v_desc := left(trim(coalesce(v_row ->> 'description', '')), 8000);
+      if length(v_name) not between 3 and 120 then raise exception 'invalid_name'; end if;
+      if length(v_title) not between 5 and 140 then raise exception 'invalid_title'; end if;
+      if length(v_desc) < 20 then raise exception 'invalid_description'; end if;
+
+      v_cname := trim(coalesce(v_row ->> 'clinic', ''));
+      v_clinic := null; v_unit := null; v_pending := null;
+      if v_cname <> '' then
+        select c.id into v_clinic from public.clinics c where private.norm(c.name) = private.norm(v_cname) limit 1;
+        if v_clinic is null then
+          if length(v_cname) < 3 then raise exception 'clinic_required'; end if;
+          v_pending := left(v_cname, 160);
+        elsif nullif(trim(v_row ->> 'unit'), '') is not null then
+          select u.id into v_unit from public.clinic_units u
+           where u.clinic_id = v_clinic and private.norm(u.name) = private.norm(trim(v_row ->> 'unit')) limit 1;
+        end if;
+      else
+        raise exception 'clinic_required';
+      end if;
+
+      v_phone := private.normalize_br_phone(v_row ->> 'whatsapp');
+      v_bad_phone := v_phone is null;
+      if v_bad_phone then v_phone := '+5500000000000'; end if;     -- marcador: telefone ausente/ inválido na planilha
+      v_email := nullif(lower(trim(coalesce(v_row ->> 'email', ''))), '');
+      if v_email is not null and (length(v_email) > 160 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then v_email := null; end if;
+      v_created := least(coalesce(nullif(v_row ->> 'created_at', '')::timestamptz, now()), now());
+      v_status := coalesce(nullif(v_row ->> 'status', '')::public.request_status, 'RECEBIDO');
+      if v_status = 'ARQUIVADO' then v_status := 'CONCLUIDO'; end if;
+
+      insert into public.requests (clinic_id, unit_id, pending_clinic_name, requester_name, requester_role, whatsapp_e164,
+                                   requester_email, title, description, module, type, status, created_at, origin, import_key)
+      values (v_clinic, v_unit, v_pending, v_name, coalesce(nullif(v_row ->> 'role', ''), 'OUTRO')::public.requester_role, v_phone,
+              v_email, v_title, v_desc, coalesce(nullif(v_row ->> 'module', ''), 'OUTRO')::public.system_module,
+              coalesce(nullif(v_row ->> 'type', ''), 'NOVA_FUNCIONALIDADE')::public.request_type,
+              v_status, v_created, 'IMPORT', v_key)
+      on conflict (import_key) where import_key is not null do nothing
+      returning id into v_id;
+      get diagnostics v_n = row_count;
+      if v_n = 0 then
+        v_skip := v_skip + 1;
+      else
+        v_ins := v_ins + 1;
+        if v_bad_phone then
+          insert into public.tags (name) values ('telefone-invalido') on conflict (name) do nothing;
+          insert into public.request_tags (request_id, tag_id) select v_id, t.id from public.tags t where t.name = 'telefone-invalido';
+        end if;
+      end if;
+    exception when others then
+      v_skip := v_skip + 1;
+      if jsonb_array_length(v_errs) < 50 then
+        v_errs := v_errs || jsonb_build_array(jsonb_build_object('row', v_idx, 'reason', left(sqlerrm, 120)));
+      end if;
+    end;
+  end loop;
+  perform private.write_audit('CREATE', 'import_batch', null, null,
+    jsonb_build_object('inserted', v_ins, 'skipped', v_skip));
+  return jsonb_build_object('inserted', v_ins, 'skipped', v_skip, 'errors', v_errs);
+end $$;
+
+-- ---------------------------------------------------------------------
 -- 10. RPCs de administração
 -- ---------------------------------------------------------------------
 create or replace function public.admin_list_staff()
@@ -838,6 +1305,27 @@ begin
   perform private.require('user:manage');
   return (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'email', p.email, 'name', p.name,
                           'role', p.role, 'active', p.active) order by p.name), '[]'::jsonb) from public.profiles p);
+end $$;
+
+-- Últimas tentativas de e-mail e o resultado HTTP da Edge Function (lido do pg_net quando disponível).
+create or replace function public.admin_notify_log(p_limit int default 50)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v jsonb;
+begin
+  perform private.require('user:manage');
+  if to_regclass('net._http_response') is not null then
+    execute $q$
+      select coalesce(jsonb_agg(x order by x.id desc), '[]'::jsonb) from (
+        select l.id, l.created_at, l.event, l.protocol, l.outcome, l.detail,
+               r.status_code as http_status, left(r.error_msg, 200) as http_error
+        from private.notify_log l left join net._http_response r on r.id = l.net_id
+        order by l.id desc limit $1) x $q$ into v using least(greatest(coalesce(p_limit, 50), 1), 200);
+  else
+    select coalesce(jsonb_agg(x order by x.id desc), '[]'::jsonb) into v from (
+      select l.id, l.created_at, l.event, l.protocol, l.outcome, l.detail, null::int as http_status, null::text as http_error
+      from private.notify_log l order by l.id desc limit least(greatest(coalesce(p_limit, 50), 1), 200)) x;
+  end if;
+  return v;
 end $$;
 
 -- O usuário precisa existir em Authentication → Users (convite/criação no painel do Supabase).
@@ -907,7 +1395,7 @@ grant execute on function public.get_request_by_token(text) to anon, authenticat
 grant execute on function
   public.search_clinics(text),
   public.list_units(uuid),
-  public.submit_request(uuid, uuid, text, text, public.requester_role, text, public.system_module, public.request_type, text, text, text[]),
+  public.submit_request(uuid, uuid, text, text, public.requester_role, text, public.system_module, public.request_type, text, text, text[], text),
   public.my_context(),
   public.log_login(),
   public.list_requests(jsonb, int, int),
@@ -923,10 +1411,25 @@ grant execute on function
   public.set_external_ref(uuid, text, text),
   public.export_requests(jsonb),
   public.admin_list_staff(),
+  public.admin_notify_log(int),
   public.admin_upsert_staff(text, text, public.app_role, boolean),
   public.admin_upsert_clinic(uuid, text, boolean),
-  public.admin_add_unit(uuid, text)
+  public.admin_add_unit(uuid, text),
+  public.set_request_public(uuid, boolean),
+  public.vote_request(uuid),
+  public.unvote_request(uuid),
+  public.add_client_comment(text, text, text[]),
+  public.get_metrics(int),
+  public.admin_import_requests(jsonb)
 to authenticated;
+
+-- páginas públicas (podem ser chamadas só com a chave pública, sem sessão)
+grant execute on function public.list_public_requests(text, public.system_module, int) to anon, authenticated;
+grant execute on function public.rate_request(text, int, text) to anon, authenticated;
+
+revoke all on private.app_settings from public, anon, authenticated;
+revoke all on private.notify_log from public, anon, authenticated;
+revoke all on sequence private.notify_log_id_seq from public, anon, authenticated;
 
 -- Pede ao PostgREST (API do Supabase) para reler o schema, caso não tenha feito sozinho.
 notify pgrst, 'reload schema';

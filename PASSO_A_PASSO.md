@@ -133,9 +133,42 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 
 ---
 
+## Parte 5 — Recursos opcionais da versão 2
+
+> **Se você já tinha a versão 1 no ar:** rode de novo o arquivo `supabase/migrations/20261121000000_init.sql` inteiro no SQL Editor (ele é seguro para repetir e não apaga dados) e publique o site novamente.
+
+### 5.1 E-mails automáticos (Resend + função `notify`)
+1. Crie conta em resend.com, **verifique o seu domínio** (Domains) e crie uma **API key**.
+2. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `notify`, cole o conteúdo de `supabase/functions/notify/index.ts`. **Desligue "Enforce JWT verification"** (o banco chama a função sem login; quem protege é o segredo).
+3. Em **Edge Functions → Secrets**, cadastre: `WEBHOOK_SECRET` (frase longa e aleatória), `RESEND_API_KEY`, `MAIL_FROM` (ex.: `Conceive <contato@seudominio.com.br>`), `TEAM_EMAILS` (e-mails da equipe, separados por vírgula) e `SITE_URL` (endereço do site no GitHub Pages).
+4. Em **Database → Extensions**, confirme que `pg_net` está ligada.
+5. Abra `supabase/configurar_emails.sql`, troque a URL e o segredo (o mesmo do passo 3) e rode no SQL Editor.
+6. Teste: envie uma solicitação com e-mail. O cliente recebe o link; a equipe recebe o aviso.
+
+### 5.2 Criar tarefa no Redmine/Pipefy (função `external-task`)
+1. Publique a função `external-task` (conteúdo de `supabase/functions/external-task/index.ts`) com **"Enforce JWT verification" LIGADO**.
+2. Secrets do Redmine: `REDMINE_URL`, `REDMINE_API_KEY`, `REDMINE_PROJECT_ID` (e opcional `REDMINE_TRACKER_ID`).
+3. Secrets do Pipefy: `PIPEFY_TOKEN`, `PIPEFY_PIPE_ID` (opcionais: `PIPEFY_TITLE_FIELD_ID`, `PIPEFY_DESC_FIELD_ID`).
+4. No detalhe da solicitação aparecem os botões **Criar tarefa no Redmine/Pipefy** (perfis que podem exportar para Dev).
+
+**Conferindo se os e-mails saem:** no painel, **Equipe → E-mails automáticos** mostra os últimos 30 envios, se deram certo e o motivo provável quando falham (por exemplo, HTTP 401 = segredo diferente entre o banco e a função).
+
+### 5.2b Alerta de solicitações paradas (SLA)
+Não precisa configurar nada: o painel já marca em vermelho **sem resposta** (Recebido há mais de 3 dias sem resposta da equipe, ou cliente respondeu e a equipe não voltou) e **parada** (Em análise ou Em desenvolvimento sem movimentação há mais de 15 dias). Use o filtro **Atraso** na lista; a tela **Métricas** mostra o total. Pedidos concluídos, arquivados, mesclados ou importados da planilha antiga não entram na conta.
+- **Resumo diário por e-mail (opcional):** rode `supabase/agendar_resumo_sla.sql` (precisa de `pg_cron` e dos e-mails já configurados). Para mudar os prazos, veja o comentário no próprio arquivo.
+- Os prazos contam dias corridos, não dias úteis.
+
+### 5.3 Roadmap público e votos
+No detalhe de uma solicitação, marque **Mostrar no roadmap público** (Admin e PO). Só o título e a descrição ficam visíveis, sem nome nem contato. **Confira se não há dados de pacientes antes de publicar.**
+
+### 5.4 Importar a planilha antiga
+Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas (*Arquivo → Fazer download → .csv*). Confira as colunas, veja a prévia e importe. Os registros importados não geram e-mails.
+
+---
+
 ## Parte 4 — Manutenção
 
-- **Limpeza mensal (1 minuto):** rode `supabase/cleanup_anonymous_users.sql` no SQL Editor. Cada cliente que envia um pedido vira um usuário anônimo e o Supabase não limpa isso sozinho. Os links de acompanhamento **continuam funcionando**.
+- **Limpeza mensal:** automática se você rodar uma vez `supabase/agendar_limpeza.sql` (precisa ligar a extensão `pg_cron`). Sem isso, rode `supabase/cleanup_anonymous_users.sql` no SQL Editor (1 minuto). Cada cliente que envia um pedido vira um usuário anônimo e o Supabase não limpa isso sozinho. Os links de acompanhamento **continuam funcionando**.
 - **Backup:** no plano gratuito do Supabase não há restauração pontual. Periodicamente use o botão de exportar do **Table Editor** ou o botão **Exportar CSV** do painel. Para uso sério, considere o plano pago.
 - **Projeto pausado:** projetos gratuitos do Supabase podem ser pausados após um período sem uso. Com acesso regular isso não acontece; se acontecer, basta clicar em **Restore project** no painel do Supabase.
 - **Atualizar o site:** qualquer alteração enviada para a branch `main` publica de novo automaticamente.
@@ -164,22 +197,27 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 
 Testado neste ambiente, **contra um PostgreSQL 16 real**, simulando o Supabase (papéis `anon`/`authenticated`, claims do JWT e schemas `auth`/`storage`):
 
-- **191 verificações no banco**: permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração.
+- **317 verificações no banco**: permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração; e na versão 2: votos, roadmap público, respostas do cliente, CSAT, métricas, importação e o envio do webhook de e-mail (com um `pg_net` simulado).
 - **9 verificações** nos scripts auxiliares (admin, clínicas, limpeza).
-- **26 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
-- **21 testes unitários**: telefone, validação, CSV seguro, anexos (limite de 50 MB exato, nome do print colado) e comparação automática dos enums e DDDs do site com os do SQL.
-- **36 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe.
+- **35 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
+- **32 testes das Edge Functions** (e-mail e tarefas Redmine/Pipefy) com um `fetch` simulado.
+- **31 testes unitários**: rascunho, importação de CSV, tema, telefone, validação, CSV seguro, anexos (limite de 50 MB exato, nome do print colado) e comparação automática dos enums e DDDs do site com os do SQL.
+- **52 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe; mais rascunho após recarregar, roadmap e votos, resposta do cliente, tarefa externa, avaliação, métricas, importação de CSV, tema e CSP sem violações.
 
 **Não foi possível testar aqui** (exige internet e as suas contas):
 - O `npm install` + `vite build` reais (o ambiente não tinha rede): validei a compilação com esbuild e os tipos com declarações simplificadas. O primeiro *build* no GitHub é o teste final; se acusar algum erro de tipo, ele aparece no log da aba Actions.
+- **Resend, Redmine e Pipefy reais**: as Edge Functions foram testadas só com respostas simuladas. A API do Pipefy (GraphQL) muda com frequência; se der erro, o log da função mostra a resposta.
+- **A CSP contra o Turnstile real.** Se o formulário travar depois de publicar, crie a variável `CSP_DESATIVADA` = `true` no GitHub (Settings → Variables) e publique de novo.
 - A comunicação com o Supabase de verdade (substituída por um banco local equivalente), o widget do Turnstile e o envio real de arquivos ao Storage (inclusive o de 50 MB). O Ctrl + V foi testado com o evento de colar simulado, não com a área de transferência real do Windows.
 - A tela do GitHub Pages e do painel do Supabase: os nomes dos menus acima seguem a documentação oficial, mas podem mudar de lugar.
 
 ## Limites conhecidos
 - O IP na auditoria vem dos cabeçalhos da requisição (`cf-connecting-ip` / `x-forwarded-for`) e é **informativo**, não prova forense.
-- Redmine/Pipefy: hoje só guarda o ID da tarefa (campos manuais); a integração automática é um próximo passo.
+- Redmine/Pipefy: a tarefa é criada pelo painel e o ID é guardado, mas o status **não volta** automaticamente para o Conceive.
+- Sem e-mail configurado (Parte 5), o recurso simplesmente não envia nada; o resto funciona igual.
+- A CSP é aplicada por `<meta>` (o GitHub Pages não permite cabeçalhos HTTP); `frame-ancestors` não funciona assim, por isso há também um bloqueio por script contra iframe.
 - O aviso ao cliente é um link `wa.me` (abre o WhatsApp com a mensagem pronta); não é a API oficial.
 - Kanban mostra até 200 cartões por vez (use os filtros).
-- A planilha antiga não foi importada.
+- A planilha antiga é importada por você, em **Importar** (CSV). Repetir o mesmo arquivo não duplica.
 
 Fontes: [Anonymous Sign-Ins](https://supabase.com/docs/guides/auth/auth-anonymous), [CAPTCHA](https://supabase.com/docs/guides/auth/auth-captcha), [API keys](https://supabase.com/docs/guides/api/api-keys), [MFA TOTP](https://supabase.com/docs/guides/auth/auth-mfa/totp), [GitHub Pages com Actions](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).

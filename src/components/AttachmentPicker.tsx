@@ -7,7 +7,7 @@ const isTextTarget = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
 
 /** Anexos: escolher arquivos, arrastar e soltar, ou colar um print com Ctrl+V (em qualquer ponto da página). */
-export function AttachmentPicker({ files, onChange, disabled }: { files: File[]; onChange: (f: File[]) => void; disabled?: boolean }) {
+export function AttachmentPicker({ files, onChange, disabled, inputId = "files" }: { files: File[]; onChange: (f: File[]) => void; disabled?: boolean; inputId?: string }) {
   const [msgs, setMsgs] = useState<string[]>([]);
   const [info, setInfo] = useState<string | null>(null);
   const [over, setOver] = useState(false);
@@ -82,7 +82,7 @@ export function AttachmentPicker({ files, onChange, disabled }: { files: File[];
           )}
         </div>
         <input
-          id="files"
+          id={inputId}
           ref={input}
           type="file"
           multiple

@@ -4,7 +4,8 @@ import { TURNSTILE_SITE_KEY } from "../lib/supabase";
 import { MODULES, REQUESTER_ROLES, TYPES } from "../lib/labels";
 import { maskPhoneInput } from "../lib/phone";
 import { validateRequestForm, type FormErrors, type RequestFormValues } from "../lib/validate";
-import { errMsg } from "../lib/format";
+import { errMsg, fmtDateTime } from "../lib/format";
+import { clearDraft, loadDraft, saveDraft, type Draft } from "../lib/draft";
 import { navigate } from "../lib/router";
 import { Banner, Field, Select, Spinner } from "../components/ui";
 import { Turnstile } from "../components/Turnstile";
@@ -19,6 +20,7 @@ const EMPTY: RequestFormValues = {
   requesterName: "",
   requesterRole: "",
   whatsapp: "",
+  email: "",
   module: "",
   type: "",
   title: "",
@@ -30,7 +32,16 @@ type Phase = "checking" | "captcha" | "ready" | "failed";
 export default function Solicitar() {
   const [phase, setPhase] = useState<Phase>("checking");
   const [phaseMsg, setPhaseMsg] = useState<string | null>(null);
-  const [v, setV] = useState<RequestFormValues>(EMPTY);
+  const [restored] = useState<Draft | null>(() => loadDraft());
+  const [draftNote, setDraftNote] = useState<Draft | null>(restored);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [v, setV] = useState<RequestFormValues>(() =>
+    restored
+      ? { ...EMPTY, mode: restored.mode, clinicId: restored.clinicId, unitId: restored.unitId, pendingClinicName: restored.pendingClinicName,
+          requesterName: restored.requesterName, requesterRole: restored.requesterRole, whatsapp: restored.whatsapp, email: restored.email,
+          module: restored.module, type: restored.type, title: restored.title, description: restored.description }
+      : EMPTY,
+  );
   const [errors, setErrors] = useState<FormErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -41,7 +52,7 @@ export default function Solicitar() {
 
   // autocomplete
   const [query, setQuery] = useState("");
-  const [clinicName, setClinicName] = useState("");
+  const [clinicName, setClinicName] = useState(restored?.clinicName ?? "");
   const [results, setResults] = useState<{ id: string; name: string }[]>([]);
   const [searched, setSearched] = useState(false);
   const [units, setUnits] = useState<{ id: string; name: string }[]>([]);
@@ -83,6 +94,34 @@ export default function Solicitar() {
     } catch (e) {
       setPhaseMsg(errMsg(e));
     }
+  }
+
+  // rascunho: recarrega as unidades da clínica restaurada (se ela não existir mais, limpa a escolha)
+  useEffect(() => {
+    if (phase !== "ready" || !restored?.clinicId) return;
+    listUnits(restored.clinicId).then(setUnits).catch(() => clearClinic());
+  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // rascunho: salva sozinho (neste navegador) enquanto a pessoa escreve
+  useEffect(() => {
+    if (done) return;
+    const t = setTimeout(() => {
+      const ok = saveDraft({ mode: v.mode, clinicId: v.clinicId, clinicName, unitId: v.unitId, pendingClinicName: v.pendingClinicName,
+        requesterName: v.requesterName, requesterRole: v.requesterRole, whatsapp: v.whatsapp, email: v.email,
+        module: v.module, type: v.type, title: v.title, description: v.description });
+      setSavedAt(ok ? Date.now() : null);
+    }, 700);
+    return () => clearTimeout(t);
+  }, [v, clinicName, done]);
+
+  function discardDraft() {
+    clearDraft();
+    setDraftNote(null);
+    setSavedAt(null);
+    setV(EMPTY);
+    setErrors({});
+    setFiles([]);
+    clearClinic();
   }
 
   // 2) busca de clínicas (debounce)
@@ -151,6 +190,7 @@ export default function Solicitar() {
           requesterName: v.requesterName.trim(),
           requesterRole: v.requesterRole,
           whatsapp: v.whatsapp,
+          email: v.email.trim() || null,
           module: v.module,
           type: v.type,
           title: v.title.trim(),
@@ -159,6 +199,8 @@ export default function Solicitar() {
         files,
         (n, total) => setProgress(`Enviando anexo ${n} de ${total}…`),
       );
+      clearDraft();
+      setDraftNote(null);
       setDone({ protocol: r.protocol, token: r.trackingToken });
       window.scrollTo({ top: 0 });
     } catch (e2) {
@@ -239,6 +281,12 @@ export default function Solicitar() {
           </label>
         </div>
 
+        {draftNote && (
+          <Banner kind="info">
+            Recuperamos o rascunho que você começou a escrever ({fmtDateTime(new Date(draftNote.savedAt).toISOString())}). Os anexos não são guardados e precisam ser adicionados de novo.{" "}
+            <button type="button" className="link" onClick={discardDraft}>Descartar rascunho</button>
+          </Banner>
+        )}
         {serverError && <Banner>{serverError}</Banner>}
 
         <fieldset disabled={phase !== "ready"}>
@@ -258,7 +306,7 @@ export default function Solicitar() {
                     id="clinic"
                     className="input"
                     autoComplete="off"
-                    placeholder="Ex.: Kardiomov"
+                    placeholder="Digite o nome da clínica"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                   />
@@ -288,7 +336,7 @@ export default function Solicitar() {
           ) : (
             <>
               <Field label="Nome da clínica (solicitar novo vínculo)" htmlFor="pending" error={errors.pendingClinicName}>
-                <input id="pending" className="input" value={v.pendingClinicName} onChange={(e) => set("pendingClinicName", e.target.value)} placeholder="Ex.: Clínica Kardiomov — Unidade 1" maxLength={160} />
+                <input id="pending" className="input" value={v.pendingClinicName} onChange={(e) => set("pendingClinicName", e.target.value)} placeholder="Digite o nome da clínica" maxLength={160} />
               </Field>
               <button type="button" className="link" onClick={() => { set("mode", "pick"); set("pendingClinicName", ""); }}>
                 Voltar para a lista
@@ -299,7 +347,7 @@ export default function Solicitar() {
 
         <div className="grid2">
           <Field label="Seu nome" htmlFor="name" error={errors.requesterName}>
-            <input id="name" className="input" autoComplete="name" maxLength={120} value={v.requesterName} onChange={(e) => set("requesterName", e.target.value)} />
+            <input id="name" className="input" placeholder="Digite seu nome completo" autoComplete="name" maxLength={120} value={v.requesterName} onChange={(e) => set("requesterName", e.target.value)} />
           </Field>
           <Field label="Seu cargo / função" htmlFor="role" error={errors.requesterRole}>
             <Select id="role" value={v.requesterRole} onChange={(x) => set("requesterRole", x)} options={REQUESTER_ROLES} placeholder="Selecione" />
@@ -307,7 +355,11 @@ export default function Solicitar() {
         </div>
 
         <Field label="WhatsApp para retorno" htmlFor="wa" error={errors.whatsapp}>
-          <input id="wa" className="input" inputMode="tel" autoComplete="tel" placeholder="(84) 99999-9999" value={v.whatsapp} onChange={(e) => set("whatsapp", maskPhoneInput(e.target.value))} />
+          <input id="wa" className="input" inputMode="tel" autoComplete="tel" placeholder="Digite o número com DDD" value={v.whatsapp} onChange={(e) => set("whatsapp", maskPhoneInput(e.target.value))} />
+        </Field>
+
+        <Field label="E-mail (opcional)" htmlFor="email" error={errors.email} hint="Se informar, enviaremos o link de acompanhamento e avisaremos quando houver novidades.">
+          <input id="email" className="input" type="email" inputMode="email" autoComplete="email" placeholder="Digite o seu e-mail" maxLength={160} value={v.email} onChange={(e) => set("email", e.target.value)} />
         </Field>
 
         <div className="grid2">
@@ -320,7 +372,7 @@ export default function Solicitar() {
         </div>
 
         <Field label="Título da solicitação" htmlFor="title" error={errors.title}>
-          <input id="title" className="input" maxLength={140} value={v.title} onChange={(e) => set("title", e.target.value)} />
+          <input id="title" className="input" placeholder="Digite um título resumido" maxLength={140} value={v.title} onChange={(e) => set("title", e.target.value)} />
         </Field>
 
         <Field
@@ -341,7 +393,11 @@ export default function Solicitar() {
           {submitting ? (progress ?? "Enviando…") : "Enviar solicitação"}
         </button>
         <p className="hint">
-          Ao enviar, você autoriza a Conceive a usar seu nome e WhatsApp apenas para dar retorno sobre esta solicitação (LGPD).
+          Ao enviar, você autoriza a Conceive a usar seu nome, WhatsApp e e-mail apenas para dar retorno sobre esta solicitação (LGPD).
+        </p>
+        <p className="hint draft-note" role="status">
+          {savedAt ? `Rascunho salvo automaticamente neste navegador às ${new Intl.DateTimeFormat("pt-BR", { timeStyle: "short", timeZone: "America/Fortaleza" }).format(savedAt)}. ` : "O rascunho é salvo automaticamente neste navegador. "}
+          {(savedAt || draftNote) && <button type="button" className="link" onClick={discardDraft}>Descartar</button>}
         </p>
       </form>
 

@@ -2,7 +2,16 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { initSupabase } from "./lib/supabase";
+import { applyTheme, getTheme } from "./lib/theme";
 import "./styles.css";
+
+applyTheme(getTheme());
+
+// Proteção contra clickjacking (frame-ancestors não funciona em <meta>).
+if (window.top !== window.self) {
+  document.documentElement.style.display = "none";
+  try { window.top!.location.href = window.self.location.href; } catch { /* bloqueado */ }
+}
 
 const root = createRoot(document.getElementById("root")!);
 const problem = initSupabase();
