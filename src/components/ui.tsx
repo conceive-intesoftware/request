@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { Icon, type IconName } from "./Icon";
 
 export function Spinner({ label = "Carregando…" }: { label?: string }) {
   return (
@@ -11,7 +12,19 @@ export function Spinner({ label = "Carregando…" }: { label?: string }) {
 export function Banner({ kind = "error", children }: { kind?: "error" | "ok" | "info"; children: ReactNode }) {
   return (
     <div className={`banner banner-${kind}`} role={kind === "error" ? "alert" : "status"}>
-      {children}
+      <Icon name={kind === "error" ? "alert" : kind === "ok" ? "check-circle" : "info"} size={18} className="banner-ic" />
+      <div className="banner-text">{children}</div>
+    </div>
+  );
+}
+
+/** Estado vazio: explica o que falta e, quando dá, oferece o próximo passo. */
+export function EmptyState({ icon = "inbox", title, children }: { icon?: IconName; title: string; children?: ReactNode }) {
+  return (
+    <div className="empty-state">
+      <span className="empty-ic"><Icon name={icon} size={22} /></span>
+      <strong>{title}</strong>
+      {children && <p className="muted">{children}</p>}
     </div>
   );
 }
@@ -75,8 +88,8 @@ export function Modal({
             <h2>{title}</h2>
             {subtitle && <p className="muted mono">{subtitle}</p>}
           </div>
-          <button className="btn btn-ghost" onClick={onClose} aria-label="Fechar">
-            ✕
+          <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Fechar">
+            <Icon name="x" />
           </button>
         </header>
         <div className="modal-body">{children}</div>

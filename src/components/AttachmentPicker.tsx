@@ -1,3 +1,4 @@
+import { Icon } from "./Icon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { addFiles, filesFromClipboard, pastedName } from "../lib/attachments";
 import { ALLOWED_MIME, MAX_FILES, MAX_FILE_MB } from "../lib/labels";
@@ -76,9 +77,9 @@ export function AttachmentPicker({ files, onChange, disabled, inputId = "files" 
         <p className="dz-title">Arraste arquivos até aqui ou <strong>cole um print com Ctrl + V</strong></p>
         <p className="hint">PNG, JPG, WEBP, PDF, MP4 ou WEBM · até {MAX_FILE_MB} MB cada · máx. {MAX_FILES} arquivos</p>
         <div className="row dz-actions">
-          <button type="button" className="btn" disabled={disabled || full} onClick={() => input.current?.click()}>Escolher arquivos</button>
+          <button type="button" className="btn" disabled={disabled || full} onClick={() => input.current?.click()}><Icon name="paperclip" size={16} /> Escolher arquivos</button>
           {typeof navigator !== "undefined" && "clipboard" in navigator && "read" in navigator.clipboard && (
-            <button type="button" className="btn" disabled={disabled || full} onClick={() => void pasteButton()}>Colar imagem</button>
+            <button type="button" className="btn" disabled={disabled || full} onClick={() => void pasteButton()}><Icon name="image" size={16} /> Colar imagem</button>
           )}
         </div>
         <input

@@ -3,7 +3,7 @@
 import { createServer, type Server } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
 import { extname, join } from "node:path";
-import { Db, fakeClient, type FakeState } from "../fake-supabase";
+import { Db, fakeClient, fakePasswords, type FakeState } from "../fake-supabase";
 
 export const PASSWORD = "Senha#12345";
 export const MFA_CODE = "123456";
@@ -39,9 +39,18 @@ export function startBridge(db: Db, siteDir: string, port: number): Promise<Serv
       case "auth/password": {
         const email = String(body.email ?? "").toLowerCase();
         const uid = db.sql(`select id from auth.users where lower(email) = ${lit(email)}`).trim();
-        if (!uid || body.password !== PASSWORD) return { data: null, error: { message: "Invalid login credentials" } };
+        if (!uid || body.password !== (fakePasswords.get(uid) ?? PASSWORD)) return { data: null, error: { message: "Invalid login credentials" } };
         state.identity = { uid, aal: "aal1", anon: false };
         return { data: { user: { id: uid } }, error: null };
+      }
+      case "auth/updateUser":
+        return client.auth.updateUser(body);
+      case "functions/admin-users":
+      {
+        const r: any = await client.functions.invoke("admin-users", { body });
+        if (!r.error) return r;
+        const detail = await r.error.context?.json?.().catch(() => ({}));
+        return { data: null, error: { message: r.error.message, ...detail } };
       }
       case "auth/signout":
         state.identity = null;

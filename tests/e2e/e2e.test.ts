@@ -51,7 +51,7 @@ console.log("✓ site compilado com esbuild");
 const db = new Db(process.env.E2E_DB ?? "conceive_e2e");
 db.recreate();
 db.file(read("supabase/tests/mock_supabase.sql"));
-db.file(read("supabase/migrations/20261121000000_init.sql"));
+db.file(read("supabase/Supabase-completo.sql"));
 const U = { admin: "a0000000-0000-0000-0000-000000000001", po: "a0000000-0000-0000-0000-000000000002", dev: "a0000000-0000-0000-0000-000000000004" };
 db.sql(`
   insert into auth.users (id, email) values ('${U.admin}','admin@x.com'), ('${U.po}','po@x.com'), ('${U.dev}','dev@x.com');
@@ -479,6 +479,127 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await admin.waitForSelector("h2:has-text('E-mails automáticos')");
     await admin.waitForSelector("text=Nenhum envio registrado.");
   });
+  console.log("v3 — usuários, autenticador, edição");
+  const nina = "SenhaNova123";
+  const loginAs = async (pg: any, email: string, pass: string) => {
+    await pg.goto(`${BASE}/#/login`);
+    await pg.fill("#email", email);
+    await pg.fill("#pw", pass);
+    await pg.click("button:has-text('Entrar')");
+  };
+  await step("Admin cria usuário pelo painel; senha fraca é recusada; e-mail repetido também", async () => {
+    await admin.click("button:has-text('Novo usuário')");
+    await admin.waitForSelector("[role=dialog] #nu-email");
+    await admin.fill("#nu-email", "nina@x.com");
+    await admin.fill("#nu-name", "Nina Nova");
+    await admin.fill("#nu-pass", "abc");
+    await admin.click("[role=dialog] button:has-text('Criar usuário')");
+    await admin.waitForSelector("[role=dialog] >> text=Mínimo de 10 caracteres");
+    await admin.fill("#nu-pass", nina);
+    await admin.click("[role=dialog] button:has-text('Criar usuário')");
+    await admin.waitForSelector("text=Usuário Nina Nova criado");
+    await admin.waitForSelector("tr:has-text('Nina Nova') >> text=pendente");
+    await snap(admin, "equipe");
+    await admin.click("button:has-text('Novo usuário')");
+    await admin.fill("#nu-email", "NINA@x.com");
+    await admin.fill("#nu-name", "Outra Nina");
+    await admin.click("[role=dialog] button:has-text('Criar usuário')");
+    await admin.waitForSelector("[role=dialog] .banner >> text=/já|cadastrad|existe/i");
+    await admin.keyboard.press("Escape");
+  });
+  await step("usuário novo entra com a senha temporária e cai no cadastro do autenticador (MFA exigido)", async () => {
+    const n1 = await newPage();
+    await loginAs(n1, "nina@x.com", nina);
+    await n1.waitForSelector("text=Primeiro acesso");
+  });
+  await step("Admin desliga o MFA: a equipe entra só com a senha; ligar de novo restaura a exigência", async () => {
+    await admin.click("input[aria-label='Exigir autenticador (MFA) para toda a equipe']");
+    await admin.waitForSelector("text=Autenticador desligado para toda a equipe.");
+    await admin.waitForSelector("tr:has-text('Nina Nova') >> text=dispensado");
+    const n2 = await newPage();
+    await loginAs(n2, "nina@x.com", nina);
+    await n2.waitForSelector("h1:has-text('Solicitações')");
+    assert.equal(await n2.locator("nav a:has-text('Equipe')").count(), 0, "Suporte não vê Equipe");
+    await admin.click("input[aria-label='Exigir autenticador (MFA) para toda a equipe']");
+    await admin.waitForSelector("text=Autenticador exigido para toda a equipe.");
+  });
+  await step("Admin dispensa um usuário específico e redefine o autenticador de outro", async () => {
+    await admin.click("button[aria-label='Editar Nina Nova']");
+    await admin.waitForSelector("[role=dialog] #eu-name");
+    await snap(admin, "equipe-editar");
+    await admin.click("[role=dialog] label.check:has-text('Dispensar o autenticador') input");
+    await admin.waitForSelector("text=Autenticador dispensado para este usuário.");
+    const n3 = await newPage();
+    await loginAs(n3, "nina@x.com", nina);
+    await n3.waitForSelector("h1:has-text('Solicitações')");
+    await admin.click("button[aria-label='Editar Nina Nova']");
+    await admin.click("[role=dialog] label.check:has-text('Dispensar o autenticador') input");
+    await admin.waitForSelector("text=Autenticador exigido deste usuário.");
+    db.sql(`insert into auth.mfa_factors (user_id, status, factor_type) select id, 'verified', 'totp' from auth.users where email = 'nina@x.com'`);
+    await admin.reload();
+    await admin.waitForSelector("tr:has-text('Nina Nova') >> text=configurado");
+    await admin.click("button[aria-label='Editar Nina Nova']");
+    await admin.click("[role=dialog] button:has-text('Redefinir autenticador')");
+    await admin.waitForSelector("text=Autenticador redefinido.");
+    assert.equal(db.sql(`select count(*) from auth.mfa_factors`).trim(), "0");
+  });
+  await step("Admin redefine a senha de um usuário e a nova senha passa a valer", async () => {
+    await admin.click("button[aria-label='Editar Nina Nova']");
+    await admin.fill("#eu-pass", "OutraSenha456");
+    await admin.click("[role=dialog] button:has-text('Redefinir senha')");
+    await admin.waitForSelector("text=Senha redefinida.");
+    const n4 = await newPage();
+    await loginAs(n4, "nina@x.com", nina);
+    await n4.waitForSelector("text=E-mail, senha ou verificação inválidos.");
+    await loginAs(n4, "nina@x.com", "OutraSenha456");
+    await n4.waitForSelector("text=Primeiro acesso");
+  });
+  await step("Admin edita o nome do usuário e usa 'Alterar minha senha'", async () => {
+    await admin.click("button[aria-label='Editar Nina Nova']");
+    await admin.fill("#eu-name", "Nina Nogueira");
+    await admin.click("[role=dialog] button:has-text('Salvar nome')");
+    await admin.waitForSelector("td:has-text('Nina Nogueira')");
+    await admin.click("button:has-text('Alterar minha senha')");
+    await admin.fill("#cp-new", "curta");
+    await admin.fill("#cp-again", "curta");
+    await admin.click("[role=dialog] button:has-text('Salvar senha')");
+    await admin.waitForSelector("[role=dialog] >> text=ao menos 10 caracteres");
+    await admin.fill("#cp-new", "NovaSenhaAdmin789");
+    await admin.fill("#cp-again", "diferente123456");
+    await admin.click("[role=dialog] button:has-text('Salvar senha')");
+    await admin.waitForSelector("[role=dialog] >> text=não são iguais");
+    await admin.fill("#cp-again", "NovaSenhaAdmin789");
+    await admin.click("[role=dialog] button:has-text('Salvar senha')");
+    await admin.waitForSelector("text=Senha alterada.");
+    await admin.click("[role=dialog] button:has-text('Fechar')");
+    const n5 = await newPage();
+    await loginAs(n5, "admin@x.com", "NovaSenhaAdmin789");
+    await n5.waitForSelector("text=Primeiro acesso");
+  });
+  await step("Admin renomeia e remove unidade; unidade em uso não pode ser removida", async () => {
+    await admin.click("nav a:has-text('Clínicas')");
+    await admin.waitForSelector("h1:has-text('Clínicas e unidades')");
+    await admin.click("button[aria-label='Renomear unidade Matriz']");
+    await admin.fill("input[aria-label='Novo nome']", "Matriz Central");
+    await admin.click("button:has-text('Salvar')");
+    await admin.waitForSelector("section:has(h2:has-text('Med Clínica Goianinha')) .tag:has-text('Matriz Central')");
+    await snap(admin, "clinicas");
+    await admin.click("button[aria-label='Renomear Med Clínica Goianinha']");
+    await admin.fill("input[aria-label='Novo nome']", "Med Clínica Goianinha Sul");
+    await admin.click("button:has-text('Salvar')");
+    await admin.waitForSelector("h2:has-text('Med Clínica Goianinha Sul')");
+    await admin.click("button[aria-label='Remover unidade Matriz Central']");
+    await admin.waitForFunction(() => !document.body.textContent?.includes("Matriz Central"));
+    // unidade da Kardiomov está em uso por solicitações enviadas nos passos anteriores (se houver) ou removível
+    const used = Number(db.sql(`select count(*) from public.requests r join public.clinic_units u on u.id = r.unit_id`).trim());
+    if (used > 0) {
+      const uname = db.sql(`select u.name from public.clinic_units u join public.requests r on r.unit_id = u.id limit 1`).trim();
+      await admin.click(`button[aria-label='Remover unidade ${uname}']`);
+      await admin.waitForSelector("[role=alert] >> text=/em uso|solicita/i");
+    }
+    await admin.click("nav a:has-text('Equipe')");
+    await admin.waitForSelector("td:has-text('Davi Dev')");
+  });
   await step("clínica nova já aparece no autocomplete do formulário público", async () => {
     const v4 = await newPage();
     await v4.goto(`${BASE}/#/solicitar`);
@@ -632,6 +753,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await admin.waitForSelector("text=0 criadas");
     await admin.click("nav a:has-text('Solicitações')");
     await admin.waitForSelector("td:has-text('Bloqueio de horário')");
+    await admin.waitForSelector("td:has-text('Relatório mensal')");
     assert.equal(await admin.locator("td:has-text('Relatório mensal')").count(), 1);
   });
   await step("tema: alterna Automático → Claro → Escuro e lembra depois de recarregar", async () => {
@@ -643,7 +765,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await t.click("button.theme-toggle");
     assert.equal(await t.getAttribute("html", "data-theme"), "dark");
     const bg = await t.evaluate(() => getComputedStyle(document.body).backgroundColor);
-    assert.equal(bg, "rgb(20, 18, 27)");
+    assert.equal(bg, "rgb(15, 13, 31)");
     await t.reload();
     await t.waitForSelector("button.theme-toggle");
     assert.equal(await t.getAttribute("html", "data-theme"), "dark");

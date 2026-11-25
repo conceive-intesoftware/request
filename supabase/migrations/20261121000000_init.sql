@@ -37,6 +37,7 @@ create table if not exists public.profiles (
   active      boolean not null default true,
   created_at  timestamptz not null default now()
 );
+alter table public.profiles add column if not exists mfa_exempt boolean not null default false;
 
 create table if not exists public.role_permissions (
   role        public.app_role not null,
@@ -230,6 +231,7 @@ on conflict do nothing;
 
 insert into public.role_permissions (role, permission) values
   ('ADMIN','request:publish'), ('PO','request:publish'),
+  ('ADMIN','request:edit'), ('PO','request:edit'),
   ('ADMIN','metrics:read'), ('PO','metrics:read'), ('SUPPORT','metrics:read'),
   ('ADMIN','import:run')
 on conflict do nothing;
@@ -252,13 +254,21 @@ returns text language sql stable set search_path = '' as $$
 $$;
 
 -- Papel de equipe do usuário atual. Só vale com MFA concluído (aal2).
+-- Política de MFA: exigido para toda a equipe por padrão. O Admin pode desligar para todos (app_settings.mfa_required = 'false')
+-- ou dispensar uma pessoa (profiles.mfa_exempt). Sem MFA exigido, a sessão com senha (aal1) já vale como equipe.
+create or replace function private.mfa_required_for(p_uid uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select coalesce((select s.value from private.app_settings s where s.key = 'mfa_required'), 'true') <> 'false'
+     and not coalesce((select p.mfa_exempt from public.profiles p where p.id = p_uid), false)
+$$;
+
 create or replace function private.staff_role()
 returns public.app_role language sql stable security definer set search_path = '' as $$
   select p.role
   from public.profiles p
   where p.id = (select auth.uid())
     and p.active
-    and coalesce((select auth.jwt()) ->> 'aal', '') = 'aal2'
+    and (coalesce((select auth.jwt()) ->> 'aal', '') = 'aal2' or not private.mfa_required_for(p.id))
 $$;
 
 create or replace function private.can(p_perm text)
@@ -693,6 +703,7 @@ begin
     'role', v_role,
     'name', v_name,
     'aal', (select auth.jwt()) ->> 'aal',
+    'mfa_required', private.mfa_required_for((select auth.uid())),
     'is_anonymous', coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false),
     'permissions', coalesce((select jsonb_agg(rp.permission order by rp.permission)
                              from public.role_permissions rp where rp.role = v_role), '[]'::jsonb));
@@ -1304,7 +1315,110 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 begin
   perform private.require('user:manage');
   return (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'email', p.email, 'name', p.name,
-                          'role', p.role, 'active', p.active) order by p.name), '[]'::jsonb) from public.profiles p);
+                          'role', p.role, 'active', p.active, 'mfa_exempt', p.mfa_exempt,
+                          'mfa_enrolled', exists (select 1 from auth.mfa_factors f where f.user_id = p.id and f.status = 'verified'),
+                          'last_sign_in_at', (select u.last_sign_in_at from auth.users u where u.id = p.id))
+                          order by p.name), '[]'::jsonb) from public.profiles p);
+end $$;
+
+-- Política de MFA (Admin): liga/desliga para toda a equipe, dispensa uma pessoa e apaga o autenticador de alguém que perdeu o celular.
+create or replace function public.admin_get_security()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require('user:manage');
+  return jsonb_build_object('mfa_required',
+    coalesce((select s.value from private.app_settings s where s.key = 'mfa_required'), 'true') <> 'false');
+end $$;
+
+create or replace function public.admin_set_mfa_required(p_required boolean)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_old text;
+begin
+  perform private.require('user:manage');
+  if p_required is null then raise exception 'invalid_input'; end if;
+  select s.value into v_old from private.app_settings s where s.key = 'mfa_required';
+  insert into private.app_settings (key, value) values ('mfa_required', case when p_required then 'true' else 'false' end)
+    on conflict (key) do update set value = excluded.value;
+  perform private.write_audit('UPDATE', 'settings', 'mfa_required',
+    jsonb_build_object('mfa_required', coalesce(v_old, 'true') <> 'false'), jsonb_build_object('mfa_required', p_required));
+end $$;
+
+create or replace function public.admin_set_user_mfa(p_user uuid, p_exempt boolean)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require('user:manage');
+  update public.profiles set mfa_exempt = coalesce(p_exempt, false) where id = p_user;
+  if not found then raise exception 'user_not_found'; end if;
+end $$;
+
+create or replace function public.admin_reset_mfa(p_user uuid)
+returns int language plpgsql security definer set search_path = '' as $$
+declare v_n int;
+begin
+  perform private.require('user:manage');
+  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'user_not_found'; end if;
+  delete from auth.mfa_factors where user_id = p_user;
+  get diagnostics v_n = row_count;
+  perform private.write_audit('UPDATE', 'profiles', p_user::text,
+    jsonb_build_object('mfa_factors', v_n), jsonb_build_object('mfa_factors', 0, 'acao', 'autenticador redefinido'));
+  return v_n;
+end $$;
+
+-- Edição dos dados de uma solicitação pela equipe (a trilha de auditoria guarda antes/depois). Só os campos enviados mudam.
+create or replace function public.update_request_fields(p_id uuid, p_fields jsonb)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  f jsonb := coalesce(p_fields, '{}'::jsonb); r public.requests;
+  v_title text; v_desc text; v_name text; v_phone text; v_email text; v_role public.requester_role;
+  v_module public.system_module; v_type public.request_type;
+begin
+  perform private.require('request:edit');
+  if jsonb_typeof(f) <> 'object' then raise exception 'invalid_input'; end if;
+  select * into r from public.requests where id = p_id and deleted_at is null for update;
+  if not found then raise exception 'not_found'; end if;
+  v_title  := case when f ? 'title' then trim(f ->> 'title') else r.title end;
+  v_desc   := case when f ? 'description' then trim(f ->> 'description') else r.description end;
+  v_name   := case when f ? 'requester_name' then trim(f ->> 'requester_name') else r.requester_name end;
+  v_role   := case when f ? 'requester_role' then (f ->> 'requester_role')::public.requester_role else r.requester_role end;
+  v_module := case when f ? 'module' then (f ->> 'module')::public.system_module else r.module end;
+  v_type   := case when f ? 'type' then (f ->> 'type')::public.request_type else r.type end;
+  if length(coalesce(v_title, '')) not between 5 and 140 then raise exception 'invalid_title'; end if;
+  if length(coalesce(v_desc, '')) not between 20 and 8000 then raise exception 'invalid_description'; end if;
+  if length(coalesce(v_name, '')) not between 3 and 120 then raise exception 'invalid_name'; end if;
+  if f ? 'whatsapp' then
+    if not private.can('pii:view') then raise exception 'forbidden: pii:view'; end if;
+    v_phone := private.normalize_br_phone(f ->> 'whatsapp');
+    if v_phone is null then raise exception 'invalid_phone'; end if;
+  else v_phone := r.whatsapp_e164; end if;
+  if f ? 'requester_email' then
+    if not private.can('pii:view') then raise exception 'forbidden: pii:view'; end if;
+    v_email := nullif(lower(trim(coalesce(f ->> 'requester_email', ''))), '');
+    if v_email is not null and (length(v_email) > 160 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then raise exception 'invalid_email'; end if;
+  else v_email := r.requester_email; end if;
+  if (f ? 'requester_name') and not private.can('pii:view') then raise exception 'forbidden: pii:view'; end if;
+  update public.requests
+     set title = v_title, description = v_desc, requester_name = v_name, requester_role = v_role,
+         module = v_module, type = v_type, whatsapp_e164 = v_phone, requester_email = v_email
+   where id = p_id;
+end $$;
+
+-- Unidades: renomear e remover (só se nenhuma solicitação usa a unidade).
+create or replace function public.admin_rename_unit(p_unit_id uuid, p_name text)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require('clinic:manage');
+  if length(trim(coalesce(p_name, ''))) not between 1 and 160 then raise exception 'invalid_input'; end if;
+  update public.clinic_units set name = trim(p_name) where id = p_unit_id;
+  if not found then raise exception 'not_found'; end if;
+end $$;
+
+create or replace function public.admin_delete_unit(p_unit_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require('clinic:manage');
+  if exists (select 1 from public.requests where unit_id = p_unit_id) then raise exception 'unit_in_use'; end if;
+  delete from public.clinic_units where id = p_unit_id;
+  if not found then raise exception 'not_found'; end if;
 end $$;
 
 -- Últimas tentativas de e-mail e o resultado HTTP da Edge Function (lido do pg_net quando disponível).
@@ -1411,6 +1525,13 @@ grant execute on function
   public.set_external_ref(uuid, text, text),
   public.export_requests(jsonb),
   public.admin_list_staff(),
+  public.admin_get_security(),
+  public.admin_set_mfa_required(boolean),
+  public.admin_set_user_mfa(uuid, boolean),
+  public.admin_reset_mfa(uuid),
+  public.update_request_fields(uuid, jsonb),
+  public.admin_rename_unit(uuid, text),
+  public.admin_delete_unit(uuid),
   public.admin_notify_log(int),
   public.admin_upsert_staff(text, text, public.app_role, boolean),
   public.admin_upsert_clinic(uuid, text, boolean),

@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { Link, useRoute } from "../lib/router";
 import { ThemeToggle } from "./ThemeToggle";
+import { Icon, PulseLine, type IconName } from "./Icon";
 
-const TABS = [
-  { to: "/solicitar", label: "Solicitação de funcionalidade", on: (r: string) => r === "/solicitar" || r === "/" },
-  { to: "/acompanhar", label: "Acompanhar sua solicitação", on: (r: string) => r.startsWith("/acompanhar") },
-  { to: "/comunidade", label: "Roadmap e votação", on: (r: string) => r === "/comunidade" },
-  { to: "/login", label: "Acesso da equipe", on: (r: string) => r === "/login", staff: true },
+const TABS: { to: string; label: string; icon: IconName; on: (r: string) => boolean; staff?: boolean }[] = [
+  { to: "/solicitar", label: "Solicitação de funcionalidade", icon: "file-plus", on: (r: string) => r === "/solicitar" || r === "/" },
+  { to: "/acompanhar", label: "Acompanhar sua solicitação", icon: "compass", on: (r: string) => r.startsWith("/acompanhar") },
+  { to: "/comunidade", label: "Roadmap e votação", icon: "megaphone", on: (r: string) => r === "/comunidade" },
+  { to: "/login", label: "Acesso da equipe", icon: "lock", on: (r: string) => r === "/login", staff: true },
 ];
 
 export function Logo({ size = 34 }: { size?: number }) {
@@ -43,7 +44,7 @@ export function PublicShell({ title, subtitle, children }: { title: string; subt
           <nav className="site-tabs" aria-label="Seções">
             {TABS.map((t) => (
               <Link key={t.to} to={t.to} className={`site-tab${t.on(route) ? " on" : ""}${t.staff ? " staff" : ""}`} aria-current={t.on(route) ? "page" : undefined}>
-                {t.label}
+                <Icon name={t.icon} size={16} />{t.label}
               </Link>
             ))}
           </nav>
@@ -52,6 +53,7 @@ export function PublicShell({ title, subtitle, children }: { title: string; subt
       </header>
 
       <section className="hero">
+        <PulseLine className="hero-pulse" />
         <div className="hero-in">
           <h1>{title}</h1>
           {subtitle && <p>{subtitle}</p>}

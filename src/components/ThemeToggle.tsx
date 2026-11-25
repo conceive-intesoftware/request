@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { Icon, type IconName } from "./Icon";
 import { THEME_LABEL, getTheme, nextTheme, setTheme, type Theme } from "../lib/theme";
 
 /** Alterna Automático → Claro → Escuro. A escolha fica salva neste navegador. */
+const ICON: Record<Theme, IconName> = { system: "monitor", light: "sun", dark: "moon" };
+
 export function ThemeToggle() {
   const [t, setT] = useState<Theme>(getTheme());
   return (
@@ -16,7 +19,7 @@ export function ThemeToggle() {
         setT(n);
       }}
     >
-      <span className="theme-label">Tema: {THEME_LABEL[t]}</span>
+      <Icon name={ICON[t]} size={16} /> <span className="theme-label">{THEME_LABEL[t]}</span>
     </button>
   );
 }

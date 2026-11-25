@@ -3,6 +3,7 @@ import { getMetrics } from "../../lib/api";
 import { MODULES, STATUSES, TYPES, labelOf } from "../../lib/labels";
 import { errMsg } from "../../lib/format";
 import { Banner, Spinner } from "../../components/ui";
+import { Icon, type IconName } from "../../components/Icon";
 import type { Metrics as M } from "../../lib/types";
 
 const fmtNum = (n: number | null | undefined, unit = "") => (n === null || n === undefined ? "—" : `${String(n).replace(".", ",")}${unit}`);
@@ -74,15 +75,15 @@ export default function Metrics() {
       {m && (
         <div className="stack">
           <section className="kpis" aria-label="Indicadores principais">
-            <div className="kpi"><span>Solicitações</span><strong>{m.total}</strong></div>
-            <div className="kpi"><span>Em aberto</span><strong>{m.open}</strong></div>
-            <div className="kpi"><span>Concluídas</span><strong>{m.completed}</strong><small>{fmtNum(m.completion_rate, "%")} do total</small></div>
-            <div className="kpi"><span>Aguardando a equipe</span><strong>{m.awaiting_reply}</strong><small>cliente respondeu por último</small></div>
-            <div className="kpi"><span>Paradas ou sem resposta</span><strong>{m.stalled}</strong><small>além do prazo (3 dias / 15 dias)</small></div>
-            <div className="kpi"><span>1ª resposta (média)</span><strong>{fmtHours(m.avg_first_response_hours)}</strong></div>
-            <div className="kpi"><span>Tempo até concluir (média)</span><strong>{m.avg_resolution_days === null ? "—" : `${fmtNum(m.avg_resolution_days)} dias`}</strong></div>
-            <div className="kpi"><span>Satisfação</span><strong>{m.csat.avg === null ? "—" : `${fmtNum(m.csat.avg)} / 5`}</strong><small>{m.csat.count} {m.csat.count === 1 ? "avaliação" : "avaliações"}</small></div>
-            <div className="kpi"><span>Apoios no roadmap</span><strong>{m.votes_total}</strong></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="clipboard" size={17} /></span><span>Solicitações</span><strong>{m.total}</strong></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="inbox" size={17} /></span><span>Em aberto</span><strong>{m.open}</strong></div>
+            <div className="kpi good"><span className="kpi-ic"><Icon name="check-circle" size={17} /></span><span>Concluídas</span><strong>{m.completed}</strong><small>{fmtNum(m.completion_rate, "%")} do total</small></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="message" size={17} /></span><span>Aguardando a equipe</span><strong>{m.awaiting_reply}</strong><small>cliente respondeu por último</small></div>
+            <div className="kpi alert"><span className="kpi-ic"><Icon name="clock" size={17} /></span><span>Paradas ou sem resposta</span><strong>{m.stalled}</strong><small>além do prazo (3 dias / 15 dias)</small></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="pulse" size={17} /></span><span>1ª resposta (média)</span><strong>{fmtHours(m.avg_first_response_hours)}</strong></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="history" size={17} /></span><span>Tempo até concluir (média)</span><strong>{m.avg_resolution_days === null ? "—" : `${fmtNum(m.avg_resolution_days)} dias`}</strong></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="star" size={17} /></span><span>Satisfação</span><strong>{m.csat.avg === null ? "—" : `${fmtNum(m.csat.avg)} / 5`}</strong><small>{m.csat.count} {m.csat.count === 1 ? "avaliação" : "avaliações"}</small></div>
+            <div className="kpi"><span className="kpi-ic"><Icon name="arrow-up" size={17} /></span><span>Apoios no roadmap</span><strong>{m.votes_total}</strong></div>
           </section>
 
           <section className="card">

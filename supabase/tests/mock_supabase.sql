@@ -15,8 +15,10 @@ create table auth.users (
   id           uuid primary key default gen_random_uuid(),
   email        text,
   is_anonymous boolean not null default false,
-  created_at   timestamptz not null default now()
+  created_at   timestamptz not null default now(),
+  last_sign_in_at timestamptz
 );
+create table auth.mfa_factors (id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade, factor_type text not null default 'totp', status text not null default 'verified');
 
 -- idênticas às do Supabase
 create function auth.uid() returns uuid language sql stable as $$

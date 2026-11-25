@@ -59,6 +59,41 @@ const lit = (v: unknown): string => {
   return `'${String(v).replace(/'/g, "''")}'`;
 };
 
+/** Senhas definidas pelas funções de administração falsas (id do usuário → senha). O E2E usa para validar o login. */
+export const fakePasswords = new Map<string, string>();
+
+/** Roda a Edge Function admin-users DE VERDADE, trocando só a rede: PostgREST vira SQL com a identidade de quem chamou, e o Auth vira auth.users. */
+async function invokeAdminUsers(db: Db, client: { rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: any; error: { message: string } | null }> }, body: unknown) {
+  const { handle } = await import("../supabase/functions/admin-users/index");
+  const fetchFn = async (url: string, init: any = {}) => {
+    const path = new URL(url).pathname;
+    const rpcM = /\/rest\/v1\/rpc\/(\w+)$/.exec(path);
+    if (rpcM) {
+      const r = await client.rpc(rpcM[1], JSON.parse(init.body || "{}"));
+      return { ok: !r.error, status: r.error ? 400 : 200, json: async () => (r.error ? { message: r.error.message } : r.data) };
+    }
+    if (path === "/auth/v1/admin/users" && init.method === "POST") {
+      const b = JSON.parse(init.body);
+      if (db.sql(`select count(*) from auth.users where lower(email) = ${lit(b.email)}`).trim() !== "0") {
+        return { ok: false, status: 422, json: async () => ({ msg: "A user with this email address has already been registered" }) };
+      }
+      const id = db.sql(`insert into auth.users (email) values (${lit(b.email)}) returning id`).trim().split("\n")[0];
+      fakePasswords.set(id, b.password);
+      return { ok: true, status: 200, json: async () => ({ id }) };
+    }
+    const put = /\/auth\/v1\/admin\/users\/([0-9a-f-]{36})$/.exec(path);
+    if (put && init.method === "PUT") {
+      fakePasswords.set(put[1], JSON.parse(init.body).password);
+      return { ok: true, status: 200, json: async () => ({ id: put[1] }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const req = new Request("https://f.test/admin-users", { method: "POST", headers: { authorization: "Bearer jwt-falso", "content-type": "application/json" }, body: JSON.stringify(body) });
+  const res = await handle(req, { SUPABASE_URL: "https://x.supabase.co", SUPABASE_ANON_KEY: "anon", SUPABASE_SERVICE_ROLE_KEY: "service" }, fetchFn);
+  const j = await res.json();
+  return res.ok ? { data: j, error: null } : { data: null, error: { message: `FunctionsHttpError ${res.status}`, context: { json: async () => j } } };
+}
+
 export function fakeClient(db: Db, state: FakeState) {
   const metaCache = new Map<string, { ret: string; set: boolean }>();
 
@@ -92,7 +127,7 @@ export function fakeClient(db: Db, state: FakeState) {
     return m;
   };
 
-  return {
+  const self = {
     async rpc(fn: string, args: Record<string, unknown> = {}) {
       try {
         const m = meta(fn);
@@ -112,7 +147,20 @@ export function fakeClient(db: Db, state: FakeState) {
       }
     },
 
+    functions: {
+      async invoke(name: string, opts?: { body?: unknown }) {
+        if (name !== "admin-users") return { data: null, error: { message: `função desconhecida: ${name}` } };
+        return invokeAdminUsers(db, self as never, opts?.body);
+      },
+    },
+
     auth: {
+      async updateUser(o: { password?: string }) {
+        if (!state.identity) return { data: null, error: { message: "Auth session missing!" } };
+        if ((o.password ?? "").length < 10) return { data: null, error: { message: "Password should be at least 10 characters" } };
+        fakePasswords.set(state.identity.uid, o.password!);
+        return { data: { user: { id: state.identity.uid } }, error: null };
+      },
       async getSession() {
         const id = state.identity;
         return { data: { session: id ? { user: { id: id.uid } } : null }, error: null };
@@ -178,4 +226,5 @@ export function fakeClient(db: Db, state: FakeState) {
       };
     },
   };
+  return self;
 }

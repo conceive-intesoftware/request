@@ -36,6 +36,7 @@ export function createClient() {
         emit("SIGNED_IN");
         return r;
       },
+      updateUser: (o: unknown) => call("auth/updateUser", o),
       signOut: async () => {
         const r = await call("auth/signout");
         emit("SIGNED_OUT");

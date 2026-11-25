@@ -1,3 +1,4 @@
+import { Icon } from "../components/Icon";
 import { useEffect, useState, type FormEvent } from "react";
 import { addClientComment, getTracking, rateRequest } from "../lib/api";
 import { STATUSES, MODULES, TYPES, labelOf } from "../lib/labels";
@@ -38,7 +39,7 @@ function Busca() {
           <label className="label" htmlFor="track-link">Link de acompanhamento</label>
           <input id="track-link" className="input" value={val} onChange={(e) => { setVal(e.target.value); setErr(null); }} placeholder="Cole aqui o link de acompanhamento" autoComplete="off" />
           {err && <p className="error" role="alert">{err}</p>}
-          <button className="btn btn-primary" type="submit">Acompanhar</button>
+          <button className="btn btn-primary" type="submit"><Icon name="search" size={16} /> Acompanhar</button>
         </form>
       </section>
       <section className="card">
@@ -182,7 +183,7 @@ function Reply({ token, onSent }: { token: string; onSent: () => void }) {
         {captcha}
         {err && <Banner>{err}</Banner>}
         {ok && <Banner kind="ok">Resposta enviada. Obrigado!</Banner>}
-        <button className="btn btn-primary" disabled={busy}>{busy ? (progress ?? "Enviando…") : "Enviar resposta"}</button>
+        <button className="btn btn-primary" disabled={busy}>{busy ? (progress ?? "Enviando…") : <><Icon name="message" size={16} /> Enviar resposta</>}</button>
       </form>
     </section>
   );

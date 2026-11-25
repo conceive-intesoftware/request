@@ -5,6 +5,7 @@ import { errMsg } from "../lib/format";
 import { navigate } from "../lib/router";
 import { PublicShell } from "../components/PublicShell";
 import { Banner, Field } from "../components/ui";
+import { Icon } from "../components/Icon";
 import { Turnstile } from "../components/Turnstile";
 
 type Step = "credentials" | "enroll" | "verify";
@@ -51,6 +52,9 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
 
       const { data: aal } = await c.auth.mfa.getAuthenticatorAssuranceLevel();
       if (aal?.currentLevel === "aal2") return await finish();
+      // O Admin pode desligar o autenticador (para todos ou só para esta pessoa): se a senha já basta, entra direto.
+      const early = await myContext().catch(() => null);
+      if (early?.role) return await finish();
 
       const { data: f } = await c.auth.mfa.listFactors();
       const verified = f?.totp?.find((x) => x.status === "verified");
@@ -94,10 +98,10 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
   }
 
   return (
-    <PublicShell title="Acesso da equipe" subtitle="Painel interno de gestão das solicitações. Acesso restrito, com autenticação em dois fatores.">
+    <PublicShell title="Acesso da equipe" subtitle="Painel interno de gestão das solicitações. Acesso restrito à equipe, com senha e autenticador.">
     <main className="page tiny">
       <div className="card login-card">
-      <h2>Entrar no painel</h2>
+      <h2><Icon name="lock" size={20} className="h-ic" />Entrar no painel</h2>
       {error && <Banner>{error}</Banner>}
 
       {step === "credentials" && (
@@ -109,7 +113,7 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
             <input id="pw" type="password" className="input" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
           </Field>
           {TURNSTILE_SITE_KEY && <Turnstile siteKey={TURNSTILE_SITE_KEY} onToken={setCaptcha} onProblem={setError} />}
-          <button className="btn btn-primary btn-block" disabled={busy}>{busy ? "Entrando…" : "Entrar"}</button>
+          <button className="btn btn-primary btn-block" disabled={busy}><Icon name="logout" size={16} />{busy ? "Entrando…" : "Entrar"}</button>
         </form>
       )}
 
@@ -121,7 +125,7 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
           <Field label="Código de 6 dígitos" htmlFor="code">
             <input id="code" className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
           </Field>
-          <button className="btn btn-primary btn-block" disabled={busy}>Confirmar e entrar</button>
+          <button className="btn btn-primary btn-block" disabled={busy}><Icon name="check" size={16} />Confirmar e entrar</button>
         </form>
       )}
 
@@ -130,7 +134,7 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
           <Field label="Código do aplicativo autenticador" htmlFor="code2">
             <input id="code2" className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} autoFocus value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
           </Field>
-          <button className="btn btn-primary btn-block" disabled={busy}>Entrar</button>
+          <button className="btn btn-primary btn-block" disabled={busy}><Icon name="shield" size={16} />Entrar</button>
         </form>
       )}
 

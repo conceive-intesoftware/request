@@ -6,6 +6,7 @@ export interface Ctx {
   name: string | null;
   aal: string | null;
   is_anonymous: boolean;
+  mfa_required?: boolean;
   permissions: string[];
 }
 
@@ -148,6 +149,9 @@ export interface StaffMember {
   name: string;
   role: StaffRole;
   active: boolean;
+  mfa_exempt: boolean;
+  mfa_enrolled: boolean;
+  last_sign_in_at: string | null;
 }
 
 export interface SubmitInput {

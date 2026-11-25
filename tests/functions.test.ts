@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handle as notify } from "../supabase/functions/notify/index";
 import { handle as external } from "../supabase/functions/external-task/index";
+import { handle as adminUsers, passwordProblem } from "../supabase/functions/admin-users/index";
 // @ts-ignore — módulo .mjs sem tipos
 import { buildCsp, injectCsp, run as runCsp } from "../scripts/apply-csp.mjs";
 
@@ -374,6 +375,106 @@ await test("CLI: aplica, respeita CSP_DESATIVADA e falha sem VITE_SUPABASE_URL",
   assert.equal(runCsp(file, { VITE_SUPABASE_URL: "https://abcd.supabase.co" }, silent), 0);
   assert.equal(readFileSync(file, "utf8"), after, "segunda execução não muda nada");
   assert.equal(runCsp(undefined, {}, silent), 1);
+});
+
+
+console.log("admin-users");
+const AENV = { SUPABASE_URL: SB, SUPABASE_ANON_KEY: "sb_publishable_x", SUPABASE_SERVICE_ROLE_KEY: "sb_secret_SERVICO" };
+const U_ID = "22222222-2222-4222-8222-222222222222";
+const acall = (body: unknown, headers: Record<string, string> = { authorization: "Bearer jwt-do-admin" }, method = "POST") =>
+  new Request("https://f.test/admin-users", { method, headers: { "content-type": "application/json", ...headers }, body: method === "POST" ? JSON.stringify(body) : undefined });
+function arouter(over: Partial<Record<string, any>> = {}) {
+  return fakeFetch((c) => {
+    if (c.url.endsWith("/rpc/admin_get_security")) return over.security ?? { body: { mfa_required: true } };
+    if (c.url.endsWith("/auth/v1/admin/users") && c.init.method === "POST") return over.create ?? { status: 200, body: { id: U_ID } };
+    if (c.url.endsWith("/rpc/admin_upsert_staff")) return over.staff ?? { body: U_ID };
+    if (c.url.endsWith("/rpc/admin_list_staff")) return over.list ?? { body: [{ id: U_ID, email: "a@b.com" }] };
+    if (c.url.includes("/auth/v1/admin/users/") && c.init.method === "PUT") return over.put ?? { status: 200, body: { id: U_ID } };
+    return { status: 500 };
+  });
+}
+const CREATE = { action: "create", email: " Nova.Pessoa@Clinica.COM ", name: "Nova Pessoa", role: "PO", password: "SenhaForte123" };
+
+await test("política de senha: 10+ caracteres com letra e número", () => {
+  for (const ok of ["SenhaForte123", "abcdefghi1", "1234567890a"]) assert.equal(passwordProblem(ok), null, ok);
+  for (const bad of ["curta1", "somenteletrasaqui", "12345678901234", "", null, undefined, 42, "a1".repeat(40)]) assert.equal(passwordProblem(bad), "weak_password", String(bad));
+});
+await test("OPTIONS, método, sem token e ação inválida", async () => {
+  const { f } = arouter();
+  const o = await adminUsers(acall(null, {}, "OPTIONS"), AENV, f);
+  assert.equal(o.status, 204);
+  assert.equal(o.headers.get("access-control-allow-origin"), "*");
+  assert.equal((await adminUsers(acall(null, {}, "GET"), AENV, f)).status, 405);
+  assert.equal((await adminUsers(acall(CREATE, {}), AENV, f)).status, 401);
+  assert.equal((await adminUsers(acall({ action: "apagar" }), AENV, f)).status, 400);
+  assert.equal((await adminUsers(acall(CREATE), { ...AENV, SUPABASE_SERVICE_ROLE_KEY: undefined }, f)).status, 500);
+});
+await test("quem não é Admin (o banco nega) recebe 403 e a chave de serviço NÃO é usada", async () => {
+  const { f, calls } = arouter({ security: { status: 403, body: { message: "forbidden: user:manage" } } });
+  const r = await adminUsers(acall(CREATE), AENV, f);
+  assert.equal(r.status, 403);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers.authorization, "Bearer jwt-do-admin");
+  assert.ok(!JSON.stringify(calls).includes("sb_secret_SERVICO"), "chave de serviço não foi enviada");
+});
+await test("create: valida, cria no Auth (e-mail confirmado), libera na equipe com o token do Admin", async () => {
+  const { f, calls } = arouter();
+  const r = await adminUsers(acall(CREATE), AENV, f);
+  assert.equal(r.status, 200);
+  const out = await r.text();
+  assert.deepEqual(JSON.parse(out), { user_id: U_ID, email: "nova.pessoa@clinica.com" });
+  assert.ok(!out.includes("SenhaForte123"), "senha nunca volta na resposta");
+  const au = calls.find((c) => c.url.endsWith("/auth/v1/admin/users"))!;
+  assert.equal(au.init.headers.authorization, "Bearer sb_secret_SERVICO");
+  assert.deepEqual(JSON.parse(au.init.body), { email: "nova.pessoa@clinica.com", password: "SenhaForte123", email_confirm: true });
+  const st = calls.find((c) => c.url.endsWith("/rpc/admin_upsert_staff"))!;
+  assert.equal(st.init.headers.authorization, "Bearer jwt-do-admin", "a liberação usa o token do Admin (auditoria e regras do banco)");
+  assert.deepEqual(JSON.parse(st.init.body), { p_email: "nova.pessoa@clinica.com", p_name: "Nova Pessoa", p_role: "PO", p_active: true });
+});
+await test("create: entradas inválidas são recusadas antes de qualquer chamada ao Auth", async () => {
+  for (const [patch, err] of [[{ email: "sem-arroba" }, "invalid_email"], [{ name: "A" }, "invalid_name"], [{ role: "ROOT" }, "invalid_role"], [{ password: "curta" }, "weak_password"]] as const) {
+    const { f, calls } = arouter();
+    const r = await adminUsers(acall({ ...CREATE, ...patch }), AENV, f);
+    assert.equal(r.status, 400);
+    assert.deepEqual(await r.json(), { error: err });
+    assert.ok(!calls.some((c) => c.url.includes("/auth/v1/")), `${err}: Auth não chamado`);
+  }
+});
+await test("create: e-mail já existente → 409; senha fraca para o Supabase → 400; falha do Auth → 502", async () => {
+  let { f } = arouter({ create: { status: 422, body: { msg: "A user with this email address has already been registered" } } });
+  let r = await adminUsers(acall(CREATE), AENV, f);
+  assert.equal(r.status, 409);
+  assert.deepEqual(await r.json(), { error: "email_exists" });
+  ({ f } = arouter({ create: { status: 422, body: { msg: "Password should be at least 12 characters" } } }));
+  assert.equal((await adminUsers(acall(CREATE), AENV, f)).status, 400);
+  ({ f } = arouter({ create: { status: 500, body: {} } }));
+  assert.equal((await adminUsers(acall(CREATE), AENV, f)).status, 502);
+  ({ f } = arouter({ create: { status: 200, body: { id: "nao-e-uuid" } } }));
+  assert.equal((await adminUsers(acall(CREATE), AENV, f)).status, 502);
+});
+await test("create: se a liberação na equipe falhar, devolve o id criado para tentar de novo", async () => {
+  const { f } = arouter({ staff: { status: 400, body: { message: "x" } } });
+  const r = await adminUsers(acall(CREATE), AENV, f);
+  assert.equal(r.status, 500);
+  assert.deepEqual(await r.json(), { error: "staff_failed", user_id: U_ID });
+});
+await test("set_password: só para quem é da equipe; senha fraca recusada; sucesso troca a senha", async () => {
+  let { f, calls } = arouter();
+  let r = await adminUsers(acall({ action: "set_password", user_id: U_ID, password: "NovaSenha2026" }), AENV, f);
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { user_id: U_ID });
+  const put = calls.find((c) => c.init.method === "PUT")!;
+  assert.equal(put.url, `${SB}/auth/v1/admin/users/${U_ID}`);
+  assert.deepEqual(JSON.parse(put.init.body), { password: "NovaSenha2026" });
+  ({ f, calls } = arouter({ list: { body: [{ id: "33333333-3333-4333-8333-333333333333" }] } }));
+  r = await adminUsers(acall({ action: "set_password", user_id: U_ID, password: "NovaSenha2026" }), AENV, f);
+  assert.equal(r.status, 404);
+  assert.ok(!calls.some((c) => c.init.method === "PUT"), "usuário fora da equipe não é tocado");
+  ({ f } = arouter());
+  assert.equal((await adminUsers(acall({ action: "set_password", user_id: U_ID, password: "curta" }), AENV, f)).status, 400);
+  assert.equal((await adminUsers(acall({ action: "set_password", user_id: "x", password: "NovaSenha2026" }), AENV, f)).status, 400);
+  ({ f } = arouter({ put: { status: 500, body: {} } }));
+  assert.equal((await adminUsers(acall({ action: "set_password", user_id: U_ID, password: "NovaSenha2026" }), AENV, f)).status, 502);
 });
 
 console.log(`\n${n} testes de funções passaram`);

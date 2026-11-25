@@ -1,3 +1,4 @@
+import { Icon } from "../components/Icon";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ensureSession, hasSession, listUnits, searchClinics, submitRequest } from "../lib/api";
 import { TURNSTILE_SITE_KEY } from "../lib/supabase";
@@ -390,7 +391,7 @@ export default function Solicitar() {
         </Field>
 
         <button type="submit" className="btn btn-primary btn-block" disabled={!canSubmit}>
-          {submitting ? (progress ?? "Enviando…") : "Enviar solicitação"}
+          {submitting ? (progress ?? "Enviando…") : <><Icon name="file-plus" size={17} /> Enviar solicitação</>}
         </button>
         <p className="hint">
           Ao enviar, você autoriza a Conceive a usar seu nome, WhatsApp e e-mail apenas para dar retorno sobre esta solicitação (LGPD).

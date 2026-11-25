@@ -61,6 +61,7 @@ const FRIENDLY: [RegExp, string][] = [
   [/invalid_merge/i, "Não é possível mesclar estas solicitações."],
   [/invalid_system/i, "Sistema externo inválido."],
   [/user_not_found/i, "Este e-mail ainda não existe em Authentication → Users do Supabase. Crie o usuário lá primeiro."],
+  [/unit_in_use/i, "Esta unidade já tem solicitações e não pode ser removida."],
   [/last_admin/i, "Não é possível rebaixar/desativar o último administrador."],
   [/not_found/i, "Registro não encontrado (pode ter sido arquivado)."],
   [/forbidden|permission denied|not_authenticated|jwt/i, "Você não tem permissão para esta ação, ou sua sessão expirou."],
@@ -206,6 +207,7 @@ export const linkClinic = (id: string, clinicId: string, unitId: string | null) 
   rpc<null>("link_request_clinic", { p_id: id, p_clinic_id: clinicId, p_unit_id: unitId });
 export const setExternalRef = (id: string, system: string, externalId: string) =>
   rpc<null>("set_external_ref", { p_id: id, p_system: system, p_external_id: externalId });
+export const updateRequestFields = (id: string, fields: Record<string, string | null>) => rpc<null>("update_request_fields", { p_id: id, p_fields: fields });
 export const setRequestPublic = (id: string, isPublic: boolean) => rpc<null>("set_request_public", { p_id: id, p_public: isPublic });
 export const getMetrics = (days: number) => rpc<Metrics>("get_metrics", { p_days: days });
 export const importRequests = (rows: ImportRow[]) => rpc<ImportResult>("admin_import_requests", { p_rows: rows });
@@ -240,6 +242,46 @@ export const adminNotifyLog = (limit = 50) => rpc<NotifyLogRow[]>("admin_notify_
 export const adminListStaff = () => rpc<StaffMember[]>("admin_list_staff");
 export const adminUpsertStaff = (email: string, name: string, role: StaffRole, active: boolean) =>
   rpc<string>("admin_upsert_staff", { p_email: email, p_name: name, p_role: role, p_active: active });
+export const adminGetSecurity = () => rpc<{ mfa_required: boolean }>("admin_get_security");
+export const adminSetMfaRequired = (required: boolean) => rpc<null>("admin_set_mfa_required", { p_required: required });
+export const adminSetUserMfa = (userId: string, exempt: boolean) => rpc<null>("admin_set_user_mfa", { p_user: userId, p_exempt: exempt });
+export const adminResetMfa = (userId: string) => rpc<number>("admin_reset_mfa", { p_user: userId });
+export const renameUnit = (unitId: string, name: string) => rpc<null>("admin_rename_unit", { p_unit_id: unitId, p_name: name });
+export const deleteUnit = (unitId: string) => rpc<null>("admin_delete_unit", { p_unit_id: unitId });
+
+const ADMIN_USERS_ERRORS: [RegExp, string][] = [
+  [/email_exists/, "Já existe um usuário com este e-mail."],
+  [/weak_password/, "A senha precisa ter ao menos 10 caracteres, com letras e números."],
+  [/invalid_email/, "E-mail inválido."],
+  [/invalid_name/, "Informe o nome (2 a 120 caracteres)."],
+  [/invalid_role/, "Papel inválido."],
+  [/staff_failed/, "O usuário foi criado no login, mas a liberação na equipe falhou. Libere o e-mail novamente na lista."],
+  [/not_found/, "Este usuário não faz parte da equipe."],
+  [/forbidden/, "Somente administradores podem fazer isto."],
+  [/not_configured/, "A função admin-users não está configurada no Supabase (veja a Parte 6 do passo a passo)."],
+];
+async function invokeAdminUsers(body: Record<string, unknown>): Promise<{ user_id: string; email?: string }> {
+  const fns = client().functions;
+  if (!fns) throw new ApiError("Esta função não está disponível neste ambiente.");
+  const { data, error } = await fns.invoke("admin-users", { body });
+  if (error) {
+    let detail = "";
+    try { detail = JSON.stringify(await (error as { context?: Response }).context?.json()); } catch { /* sem corpo */ }
+    const raw = `${error.message ?? ""} ${detail}`;
+    for (const [re, msg] of ADMIN_USERS_ERRORS) if (re.test(raw)) throw new ApiError(msg, raw);
+    throw new ApiError("Não foi possível concluir. Confirme se a função admin-users foi publicada no Supabase (veja a Parte 6 do passo a passo).", raw);
+  }
+  return data as { user_id: string; email?: string };
+}
+/** Cria o usuário (login) e já o libera na equipe. Senha: 10+ caracteres com letras e números. */
+export const createStaffUser = (input: { email: string; name: string; role: StaffRole; password: string }) =>
+  invokeAdminUsers({ action: "create", ...input });
+export const setStaffPassword = (userId: string, password: string) => invokeAdminUsers({ action: "set_password", user_id: userId, password });
+/** Troca a senha de quem está logado. */
+export async function changeMyPassword(password: string): Promise<void> {
+  const { error } = await client().auth.updateUser({ password });
+  if (error) throw new ApiError(/weak|short|characters|password/i.test(error.message) ? "A senha precisa ter ao menos 10 caracteres, com letras e números." : "Não foi possível trocar a senha. Entre novamente e tente de novo.", error.message);
+}
 export const upsertClinic = (id: string | null, name: string, active: boolean) =>
   rpc<string>("admin_upsert_clinic", { p_id: id, p_name: name, p_active: active });
 export const addUnit = (clinicId: string, name: string) =>

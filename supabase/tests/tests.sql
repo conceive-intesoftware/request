@@ -128,8 +128,8 @@ end $t$;
 do $t$
 declare n int;
 begin
-  select count(*) into n from public.role_permissions where role = 'ADMIN';      perform tests.ok(n = 18, 'ADMIN tem 18 permissões');
-  select count(*) into n from public.role_permissions where role = 'PO';         perform tests.ok(n = 15, 'PO tem 15 permissões');
+  select count(*) into n from public.role_permissions where role = 'ADMIN';      perform tests.ok(n = 19, 'ADMIN tem 19 permissões');
+  select count(*) into n from public.role_permissions where role = 'PO';         perform tests.ok(n = 16, 'PO tem 16 permissões');
   select count(*) into n from public.role_permissions where role = 'SUPPORT';    perform tests.ok(n = 7, 'SUPPORT tem 7 permissões');
   select count(*) into n from public.role_permissions where role = 'DEV_VIEWER'; perform tests.ok(n = 2, 'DEV_VIEWER tem 2 permissões');
   perform tests.ok(not exists (select 1 from public.role_permissions where role = 'DEV_VIEWER' and permission = 'pii:view'), 'DEV não vê PII');
@@ -1089,6 +1089,129 @@ begin
   delete from private.app_settings;
 end $t$;
 
+-- ───────── 24d. política de MFA (Admin) ─────────
+do $t$
+declare j jsonb; v_admin uuid := 'a0000000-0000-0000-0000-000000000001'; v_po uuid := 'a0000000-0000-0000-0000-000000000002';
+  v_dev uuid := 'a0000000-0000-0000-0000-000000000004'; n int;
+begin
+  perform tests.login(v_po, 'aal1');
+  perform tests.ok(public.my_context() ->> 'role' is null and (public.my_context() ->> 'mfa_required')::boolean, 'padrão: sem MFA (aal1) não há papel de equipe');
+  perform tests.logout();
+
+  perform tests.login(v_po, 'aal2');
+  perform tests.fails($$select public.admin_set_mfa_required(false)$$, 'forbidden', 'PO não altera a política de MFA');
+  perform tests.fails($$select public.admin_get_security()$$, 'forbidden', 'PO não lê a política');
+  perform tests.logout();
+  perform tests.fails($$select public.admin_set_mfa_required(false)$$, 'not_authenticated', 'visitante não altera a política');
+
+  perform tests.login(v_admin, 'aal2');
+  perform tests.ok((public.admin_get_security() ->> 'mfa_required')::boolean, 'política inicial: MFA exigido');
+  perform public.admin_set_mfa_required(false);
+  perform tests.ok(not (public.admin_get_security() ->> 'mfa_required')::boolean, 'Admin desliga o MFA para a equipe');
+  perform tests.logout();
+  perform tests.ok((select count(*) = 1 from public.audit_logs where entity = 'settings' and entity_id = 'mfa_required' and (new_value ->> 'mfa_required') = 'false' and (previous_value ->> 'mfa_required') = 'true'), 'mudança da política fica na auditoria (antes/depois)');
+
+  perform tests.login(v_po, 'aal1');
+  j := public.my_context();
+  perform tests.ok(j ->> 'role' = 'PO' and not (j ->> 'mfa_required')::boolean, 'MFA desligado: login só com senha (aal1) vale como equipe');
+  perform tests.ok(jsonb_typeof(public.list_requests('{}'::jsonb, 1, 5) -> 'rows') = 'array', 'e já consegue usar as funções do painel');
+  perform tests.logout();
+  perform tests.login(gen_random_uuid(), 'aal1', true);
+  perform tests.ok(public.my_context() ->> 'role' is null, 'sessão anônima continua sem papel, mesmo com MFA desligado');
+  perform tests.logout();
+  perform tests.login(gen_random_uuid(), 'aal1');
+  perform tests.ok(public.my_context() ->> 'role' is null, 'usuário do Auth sem perfil na equipe continua sem papel');
+  perform tests.logout();
+
+  perform tests.login(v_admin, 'aal2');
+  perform public.admin_set_mfa_required(true);
+  perform tests.logout();
+  perform tests.login(v_po, 'aal1');
+  perform tests.ok(public.my_context() ->> 'role' is null, 'MFA religado: aal1 volta a não valer');
+  perform tests.logout();
+
+  -- dispensa individual
+  perform tests.login(v_admin, 'aal2');
+  perform public.admin_set_user_mfa(v_dev, true);
+  perform tests.fails($$select public.admin_set_user_mfa(gen_random_uuid(), true)$$, 'user_not_found', 'usuário inexistente');
+  perform tests.logout();
+  perform tests.login(v_dev, 'aal1');
+  perform tests.ok(public.my_context() ->> 'role' = 'DEV_VIEWER' and not (public.my_context() ->> 'mfa_required')::boolean, 'pessoa dispensada entra só com senha');
+  perform tests.logout();
+  perform tests.login(v_po, 'aal1');
+  perform tests.ok(public.my_context() ->> 'role' is null, 'quem não foi dispensado continua exigindo MFA');
+  perform tests.logout();
+  perform tests.login(v_admin, 'aal2');
+  perform public.admin_set_user_mfa(v_dev, false);
+  perform tests.ok((select (e ->> 'mfa_exempt')::boolean = false from jsonb_array_elements(public.admin_list_staff()) e where e ->> 'id' = v_dev::text), 'lista da equipe mostra a dispensa');
+  perform tests.logout();
+
+  -- redefinir autenticador
+  insert into auth.mfa_factors (user_id, status) values (v_dev, 'verified');
+  perform tests.login(v_admin, 'aal2');
+  perform tests.ok((select (e ->> 'mfa_enrolled')::boolean from jsonb_array_elements(public.admin_list_staff()) e where e ->> 'id' = v_dev::text), 'lista mostra quem tem autenticador cadastrado');
+  perform tests.ok(public.admin_reset_mfa(v_dev) = 1, 'Admin redefine o autenticador (apaga 1 fator)');
+  perform tests.ok(not (select (e ->> 'mfa_enrolled')::boolean from jsonb_array_elements(public.admin_list_staff()) e where e ->> 'id' = v_dev::text), 'depois da redefinição não há autenticador');
+  perform tests.fails($$select public.admin_reset_mfa(gen_random_uuid())$$, 'user_not_found', 'redefinir usuário inexistente');
+  perform tests.logout();
+  perform tests.ok((select count(*) = 1 from public.audit_logs where entity = 'profiles' and entity_id = 'a0000000-0000-0000-0000-000000000004' and (new_value ->> 'acao') = 'autenticador redefinido'), 'redefinição de autenticador auditada');
+  perform tests.login(v_po, 'aal2');
+  perform tests.fails($$select public.admin_reset_mfa('a0000000-0000-0000-0000-000000000004')$$, 'forbidden', 'PO não redefine autenticador de ninguém');
+  perform tests.logout();
+end $t$;
+
+-- ───────── 24e. edição de solicitação e de unidades ─────────
+do $t$
+declare a record; v_po uuid := 'a0000000-0000-0000-0000-000000000002'; v_admin uuid := 'a0000000-0000-0000-0000-000000000001';
+  v_sup uuid := 'a0000000-0000-0000-0000-000000000003'; v_dev uuid := 'a0000000-0000-0000-0000-000000000004';
+  v_unit uuid; v_unit2 uuid; v_clinic uuid;
+begin
+  select * into a from tests.mk('Pedido para editar os dados', null, 'Clínica Edição');
+  perform tests.login(v_po, 'aal2');
+  perform public.update_request_fields(a.id, '{"title":"Pedido com título corrigido","module":"FINANCEIRO","type":"MELHORIA_FLUXO","requester_name":"Maria Corrigida","whatsapp":"(84) 99999-1234","requester_email":"Maria@Clinica.com"}'::jsonb);
+  perform tests.logout();
+  perform tests.ok((select title = 'Pedido com título corrigido' and module = 'FINANCEIRO' and type = 'MELHORIA_FLUXO' and requester_name = 'Maria Corrigida'
+                    and whatsapp_e164 = '+5584999991234' and requester_email = 'maria@clinica.com' from public.requests where id = a.id), 'PO edita título, módulo, tipo, nome, telefone (normalizado) e e-mail');
+  perform tests.ok((select count(*) >= 1 from public.audit_logs where entity = 'requests' and entity_id = a.id::text and action = 'UPDATE' and (previous_value ->> 'title') = 'Pedido para editar os dados'), 'edição auditada com o valor anterior');
+
+  perform tests.login(v_po, 'aal2');
+  perform public.update_request_fields(a.id, '{"description":"Descrição nova, também com mais de vinte caracteres."}'::jsonb);
+  perform tests.logout();
+  perform tests.ok((select title = 'Pedido com título corrigido' and description like 'Descrição nova%' from public.requests where id = a.id), 'só os campos enviados mudam');
+  perform tests.login(v_po, 'aal2');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"title":"abc"}')$$, a.id), 'invalid_title', 'título curto recusado');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"description":"curta"}')$$, a.id), 'invalid_description', 'descrição curta recusada');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"whatsapp":"123"}')$$, a.id), 'invalid_phone', 'telefone inválido recusado');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"requester_email":"sem-arroba"}')$$, a.id), 'invalid_email', 'e-mail inválido recusado');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"module":"INEXISTENTE"}')$$, a.id), '.', 'módulo inexistente recusado');
+  perform tests.fails($$select public.update_request_fields(gen_random_uuid(), '{"title":"Título válido aqui"}')$$, 'not_found', 'solicitação inexistente');
+  perform tests.logout();
+  perform tests.login(v_sup, 'aal2');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"title":"Título tentado pelo suporte"}')$$, a.id), 'forbidden', 'Suporte não edita solicitações');
+  perform tests.logout();
+  perform tests.login(v_dev, 'aal2');
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"title":"Título tentado pelo dev"}')$$, a.id), 'forbidden', 'Dev não edita solicitações');
+  perform tests.logout();
+  perform tests.fails(format($$select public.update_request_fields(%L, '{"title":"Título tentado sem login"}')$$, a.id), 'not_authenticated', 'visitante não edita');
+
+  -- unidades
+  select id into v_clinic from public.clinics order by created_at limit 1;
+  insert into public.clinic_units (clinic_id, name) values (v_clinic, 'Unidade para renomear') returning id into v_unit;
+  insert into public.clinic_units (clinic_id, name) values (v_clinic, 'Unidade em uso') returning id into v_unit2;
+  update public.requests set unit_id = v_unit2, clinic_id = v_clinic where id = a.id;
+  perform tests.login(v_admin, 'aal2');
+  perform public.admin_rename_unit(v_unit, '  Unidade Renomeada ');
+  perform tests.ok((select name = 'Unidade Renomeada' from public.clinic_units where id = v_unit), 'Admin renomeia a unidade');
+  perform tests.fails($$select public.admin_rename_unit(gen_random_uuid(), 'x')$$, 'not_found', 'renomear unidade inexistente');
+  perform tests.fails(format($$select public.admin_delete_unit(%L)$$, v_unit2), 'unit_in_use', 'unidade usada por solicitação não pode ser apagada');
+  perform public.admin_delete_unit(v_unit);
+  perform tests.ok(not exists (select 1 from public.clinic_units where id = v_unit), 'unidade sem uso é apagada');
+  perform tests.logout();
+  perform tests.login(v_po, 'aal2');
+  perform tests.fails(format($$select public.admin_rename_unit(%L, 'Tentativa')$$, v_unit2), 'forbidden', 'PO não renomeia unidades');
+  perform tests.logout();
+end $t$;
+
 -- ───────── 30. privilégios das novidades ─────────
 do $t$
 begin
@@ -1099,6 +1222,8 @@ begin
   perform tests.ok(not has_table_privilege('authenticated', 'private.app_settings', 'select') and not has_table_privilege('anon', 'private.app_settings', 'select'), 'configurações internas fechadas');
   perform tests.ok(not has_table_privilege('authenticated', 'public.request_votes', 'select') and not has_table_privilege('anon', 'public.request_votes', 'insert'), 'votos só por RPC');
   perform tests.ok(not has_function_privilege('authenticated', 'private.notify_event(jsonb)', 'execute'), 'notify_event não é chamável pelo cliente');
+  perform tests.ok(not has_function_privilege('anon', 'public.admin_set_mfa_required(boolean)', 'execute') and not has_function_privilege('anon', 'public.admin_reset_mfa(uuid)', 'execute') and not has_function_privilege('anon', 'public.update_request_fields(uuid,jsonb)', 'execute') and not has_function_privilege('anon', 'public.admin_rename_unit(uuid,text)', 'execute'), 'anon não chama as funções novas de administração');
+  perform tests.ok(has_function_privilege('authenticated', 'public.admin_set_mfa_required(boolean)', 'execute') and not has_function_privilege('authenticated', 'private.mfa_required_for(uuid)', 'execute'), 'authenticated chama a RPC, mas não o helper interno');
 end $t$;
 
 -- ───────── 22. invariantes ─────────

@@ -14,7 +14,7 @@ import { FIELDS, REQUIRED, buildRows, detectColumns, mapModule, mapRole, mapStat
 import { nextTheme } from "../src/lib/theme";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sql = readFileSync(resolve(root, "supabase/migrations/20261121000000_init.sql"), "utf8");
+const sql = readFileSync(resolve(root, "supabase/Supabase-completo.sql"), "utf8");
 
 let n = 0;
 function test(name: string, fn: () => void) {
@@ -290,5 +290,10 @@ await (async () => {try {
   assert.equal(again.rows[0].key, r.rows[0].key, "chave estável entre execuções");
   n++; console.log("  ✓ buildRows: valida, separa problemas e remove repetidas do arquivo");
 } catch (e) { console.error(e); process.exit(1); } })();
+
+{
+  assert.ok(/v_admin_email\s+text\s+:= null/.test(sql) && /v_cron_sla\s+boolean := false/.test(sql), "Parte B do Supabase-completo.sql vem desligada por padrão");
+  n++; console.log("  ✓ Supabase-completo.sql: Parte B desligada por padrão");
+}
 
 console.log(`\n${n} testes unitários passaram`);

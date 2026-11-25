@@ -48,14 +48,8 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 ## Estrutura
 
 ```
-supabase/migrations/…_init.sql   Tabelas, RBAC, triggers, RLS, RPCs, Storage   ← rodar no SQL Editor
-supabase/bootstrap_admin.sql     Libera o 1º administrador
-supabase/seed_clinics.sql        (opcional) clínicas iniciais
-supabase/cleanup_anonymous_users.sql   Manutenção mensal
-supabase/configurar_emails.sql   Liga os e-mails automáticos (opcional)
-supabase/agendar_limpeza.sql     Agenda a limpeza mensal com pg_cron (opcional)
-supabase/agendar_resumo_sla.sql  Resumo diário de pedidos parados (opcional)
-supabase/functions/              notify (Resend) e external-task (Redmine/Pipefy)
+supabase/Supabase-completo.sql   TODO o banco em um arquivo único (+ opcionais na Parte B)   ← rodar no SQL Editor
+supabase/functions/              notify (Resend), external-task (Redmine/Pipefy) e admin-users (criar usuários)
 scripts/apply-csp.mjs            Insere a Content-Security-Policy no build
 supabase/tests/                  Mock do Supabase + suíte de testes do banco
 src/lib/                         api.ts (RPCs), validação, telefone, CSV, auth, roteador

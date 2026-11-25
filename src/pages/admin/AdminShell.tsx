@@ -1,16 +1,20 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { AuthState } from "../../lib/useAuth";
 import { Link, navigate, useRoute } from "../../lib/router";
 import { Banner, Spinner } from "../../components/ui";
 import { Logo } from "../../components/PublicShell";
+import { Icon, PulseLine, type IconName } from "../../components/Icon";
+import { STAFF_ROLES, labelOf } from "../../lib/labels";
 import Dashboard from "./Dashboard";
 import Metrics from "./Metrics";
 import ImportPage from "./Import";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { Clinics, Team } from "./Manage";
+import { ChangePassword } from "../../components/ChangePassword";
 
 export default function AdminShell({ auth }: { auth: AuthState }) {
   const route = useRoute();
+  const [pwOpen, setPwOpen] = useState(false);
   const { ctx, loading } = auth;
 
   useEffect(() => {
@@ -44,23 +48,47 @@ export default function AdminShell({ auth }: { auth: AuthState }) {
     route === "/admin/importar" && can("import:run") ? <ImportPage /> :
     <Dashboard ctx={ctx} />;
 
+  const items: { to: string; label: string; icon: IconName; show: boolean }[] = [
+    { to: "/admin", label: "Solicitações", icon: "list", show: true },
+    { to: "/admin/metricas", label: "Métricas", icon: "chart", show: can("metrics:read") },
+    { to: "/admin/clinicas", label: "Clínicas", icon: "building", show: can("clinic:manage") },
+    { to: "/admin/equipe", label: "Equipe", icon: "users", show: can("user:manage") },
+    { to: "/admin/importar", label: "Importar", icon: "upload", show: can("import:run") },
+  ];
+  const initials = (ctx.name ?? "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
+
   return (
-    <div className="shell">
+    <div className="app">
       <a className="skip-link" href="#conteudo" onClick={(e) => { e.preventDefault(); document.getElementById("conteudo")?.focus(); }}>Pular para o conteúdo</a>
-      <header className="topbar">
-        <span className="admin-brand"><Logo size={28} /><span><strong>Conceive</strong><small>Painel da equipe</small></span></span>
-        <nav>
-          <Link to="/admin" className={route === "/admin" ? "on" : ""}>Solicitações</Link>
-          {can("metrics:read") && <Link to="/admin/metricas" className={route === "/admin/metricas" ? "on" : ""}>Métricas</Link>}
-          {can("clinic:manage") && <Link to="/admin/clinicas" className={route === "/admin/clinicas" ? "on" : ""}>Clínicas</Link>}
-          {can("user:manage") && <Link to="/admin/equipe" className={route === "/admin/equipe" ? "on" : ""}>Equipe</Link>}
-          {can("import:run") && <Link to="/admin/importar" className={route === "/admin/importar" ? "on" : ""}>Importar</Link>}
+      <aside className="sidebar">
+        <div className="side-brand">
+          <Logo size={34} />
+          <span><strong>Conceive</strong><small>Painel da equipe</small></span>
+        </div>
+        <PulseLine className="side-pulse" />
+        <nav className="side-nav" aria-label="Painel">
+          {items.filter((i) => i.show).map((i) => (
+            <Link key={i.to} to={i.to} className={route === i.to ? "on" : ""} aria-current={route === i.to ? "page" : undefined}>
+              <Icon name={i.icon} size={18} /><span>{i.label}</span>
+            </Link>
+          ))}
         </nav>
-        <span className="push muted small">{ctx.name}</span>
-        <ThemeToggle />
-        <button className="btn btn-ghost" onClick={() => void auth.signOut().then(() => navigate("/login"))}>Sair</button>
-      </header>
-      <main className="page" id="conteudo" tabIndex={-1}>{page}</main>
+        <div className="side-user">
+          <span className="avatar" aria-hidden="true">{initials}</span>
+          <span className="who"><strong>{ctx.name}</strong><small>{labelOf(STAFF_ROLES, ctx.role)}</small></span>
+        </div>
+        <button className="side-link" onClick={() => setPwOpen(true)}><Icon name="key" size={16} /><span>Alterar minha senha</span></button>
+      </aside>
+      {pwOpen && <ChangePassword onClose={() => setPwOpen(false)} />}
+      <div className="app-main">
+        <header className="app-top">
+          <span className="app-crumb">{items.find((i) => i.to === route)?.label ?? "Solicitações"}</span>
+          <span className="push" />
+          <ThemeToggle />
+          <button className="btn btn-ghost" onClick={() => void auth.signOut().then(() => navigate("/login"))}><Icon name="logout" size={16} /> Sair</button>
+        </header>
+        <main className="page" id="conteudo" tabIndex={-1}>{page}</main>
+      </div>
     </div>
   );
 }

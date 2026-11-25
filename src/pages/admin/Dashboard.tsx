@@ -4,7 +4,8 @@ import type { Ctx, Filters, ListResult } from "../../lib/types";
 import { MODULES, PRIORITIES, REQUESTER_ROLES, STATUSES, labelOf } from "../../lib/labels";
 import { EXPORT_COLUMNS, downloadCsv, toCsv } from "../../lib/csv";
 import { errMsg, fmtDate } from "../../lib/format";
-import { Banner, Select, Spinner } from "../../components/ui";
+import { Banner, EmptyState, Select, Spinner } from "../../components/ui";
+import { Icon } from "../../components/Icon";
 import { RequestDetail } from "./RequestDetail";
 import { Kanban } from "./Kanban";
 
@@ -84,15 +85,15 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
         </div>
         <div className="row">
           <div className="seg" role="group" aria-label="Visualização">
-            <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}>Lista</button>
-            <button className={view === "kanban" ? "on" : ""} onClick={() => setView("kanban")}>Kanban</button>
+            <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}><Icon name="list" size={15} /> Lista</button>
+            <button className={view === "kanban" ? "on" : ""} onClick={() => setView("kanban")}><Icon name="columns" size={15} /> Kanban</button>
           </div>
-          {can("report:export") && <button className="btn" onClick={() => void onExport()}>Exportar CSV</button>}
+          {can("report:export") && <button className="btn" onClick={() => void onExport()}><Icon name="download" size={16} /> Exportar CSV</button>}
         </div>
       </header>
 
       <form className="filters" onSubmit={(e) => { e.preventDefault(); setF("q", q.trim()); }}>
-        <input className="input" placeholder="Buscar por título, protocolo ou solicitante…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar" />
+        <input className="input" placeholder="Buscar título, protocolo ou nome…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar" />
         <Select ariaLabel="Clínica" value={filters.clinic_id ?? ""} onChange={(v) => setF("clinic_id", v)} options={clinics.map((c) => [c.id, c.name] as const)} placeholder="Clínica: todas" />
         <Select ariaLabel="Cargo" value={filters.requester_role ?? ""} onChange={(v) => setF("requester_role", v)} options={REQUESTER_ROLES} placeholder="Cargo: todos" />
         <Select ariaLabel="Módulo" value={filters.module ?? ""} onChange={(v) => setF("module", v)} options={MODULES} placeholder="Módulo: todos" />
@@ -101,8 +102,8 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
         <Select ariaLabel="Prioridade" value={filters.priority ?? ""} onChange={(v) => setF("priority", v)} options={PRIORITIES} placeholder="Prioridade: todas" />
         <input className="input" type="date" aria-label="De" value={filters.from ?? ""} onChange={(e) => setF("from", e.target.value)} />
         <input className="input" type="date" aria-label="Até" value={filters.to ?? ""} onChange={(e) => setF("to", e.target.value)} />
-        <button type="submit" className="btn">Buscar</button>
-        <button type="button" className="btn btn-ghost" onClick={() => { setFilters({}); setQ(""); setPage(1); }}>Limpar</button>
+        <button type="submit" className="btn"><Icon name="search" size={16} /> Buscar</button>
+        <button type="button" className="btn btn-ghost" onClick={() => { setFilters({}); setQ(""); setPage(1); }}><Icon name="x" size={15} /> Limpar</button>
       </form>
 
       {error && <Banner>{error}</Banner>}
@@ -116,19 +117,21 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
                 <tr><th>Protocolo</th><th>Título</th><th>Clínica</th><th>Solicitante</th><th>Módulo</th><th>Status</th><th>Prioridade</th><th className="num">RICE</th><th>Data</th></tr>
               </thead>
               <tbody>
-                {data.rows.length === 0 && <tr><td colSpan={9} className="empty">Nenhuma solicitação encontrada.</td></tr>}
+                {data.rows.length === 0 && <tr><td colSpan={9}><EmptyState title="Nenhuma solicitação encontrada.">Ajuste os filtros ou clique em Limpar para ver tudo.</EmptyState></td></tr>}
                 {data.rows.map((r) => (
                   <tr key={r.id} tabIndex={0} onClick={() => setOpenId(r.id)} onKeyDown={(e) => e.key === "Enter" && setOpenId(r.id)}>
                     <td className="mono small">{r.protocol}</td>
                     <td className="title-cell">
-                      <strong>{r.title}</strong>
+                      <strong className="t-title">{r.title}</strong>
+                      <span className="t-tags">
                       {r.duplicates_count > 0 && <span className="tag">+{r.duplicates_count} similar(es)</span>}
-                      {r.is_public && <span className="tag outline">público</span>}
-                      {r.votes > 0 && <span className="tag outline" title="Apoios no roadmap">▲ {r.votes}</span>}
-                      {r.awaiting_reply && <span className="tag warn-tag">aguardando resposta</span>}
+                      {r.is_public && <span className="tag outline"><Icon name="globe" size={11} />público</span>}
+                      {r.votes > 0 && <span className="tag outline" title="Apoios no roadmap"><Icon name="arrow-up" size={11} />{r.votes}</span>}
+                      {r.awaiting_reply && <span className="tag warn-tag"><Icon name="message" size={11} />aguardando resposta</span>}
                       {r.sla && <span className="tag sla-tag" title={r.sla === "PARADA" ? "Sem movimentação da equipe além do prazo" : "Sem resposta da equipe além do prazo"}>{r.sla === "PARADA" ? "parada" : "sem resposta"}</span>}
                       {r.csat_score != null && <span className="tag outline" title="Satisfação">★ {r.csat_score}</span>}
                       {r.merged_into_id && <span className="tag outline">mesclada</span>}
+                      </span>
                     </td>
                     <td>{r.clinic_name ?? <span className="warn" title="Clínica ainda não vinculada">{r.pending_clinic_name} (novo)</span>}</td>
                     <td><div className={r.pii_masked ? "mono small" : ""}>{r.requester_name}</div><div className="muted small">{labelOf(REQUESTER_ROLES, r.requester_role)}</div></td>
@@ -145,8 +148,8 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
           <nav className="pager" aria-label="Paginação">
             <span className="muted">Página {data.page} de {pages}</span>
             <div className="row">
-              <button className="btn" disabled={data.page <= 1} onClick={() => setPage(page - 1)}>Anterior</button>
-              <button className="btn" disabled={data.page >= pages} onClick={() => setPage(page + 1)}>Próxima</button>
+              <button className="btn" disabled={data.page <= 1} onClick={() => setPage(page - 1)}><Icon name="arrow-left" size={15} /> Anterior</button>
+              <button className="btn" disabled={data.page >= pages} onClick={() => setPage(page + 1)}>Próxima <Icon name="chevron-right" size={15} /></button>
             </div>
           </nav>
         </>

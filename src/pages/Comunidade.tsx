@@ -1,3 +1,4 @@
+import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { listPublicRequests, unvoteRequest, voteRequest } from "../lib/api";
 import { MODULES, STATUSES, TYPES, labelOf } from "../lib/labels";
@@ -53,7 +54,7 @@ export default function Comunidade() {
         <form className="filters pub-filters" onSubmit={(e) => { e.preventDefault(); setPage(1); setSearch(q.trim()); }}>
           <input className="input" placeholder="Digite o que você procura" aria-label="Buscar no roadmap" value={q} onChange={(e) => setQ(e.target.value)} />
           <Select ariaLabel="Módulo" value={module} onChange={(v) => { setPage(1); setModule(v); }} options={MODULES} placeholder="Módulo: todos" />
-          <button className="btn" type="submit">Buscar</button>
+          <button className="btn" type="submit"><Icon name="search" size={16} /> Buscar</button>
         </form>
 
         {captcha}
@@ -78,7 +79,7 @@ export default function Comunidade() {
                   <span className="hint">Seu pedido</span>
                 ) : (
                   <button className={r.voted_by_me ? "btn btn-voted" : "btn btn-primary"} disabled={busyId === r.id} aria-pressed={r.voted_by_me} onClick={() => void toggle(r)}>
-                    {r.voted_by_me ? "✓ Você apoia" : "Também preciso disso"}
+                    {r.voted_by_me ? <><Icon name="check" size={15} /> Você apoia</> : <><Icon name="arrow-up" size={15} /> Também preciso disso</>}
                   </button>
                 )}
               </div>

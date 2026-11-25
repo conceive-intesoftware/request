@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Db, fakeClient, type FakeState } from "./fake-supabase";
+import { Db, fakeClient, fakePasswords, type FakeState } from "./fake-supabase";
 import * as api from "../src/lib/api";
 import { EXPORT_COLUMNS, toCsv } from "../src/lib/csv";
 
@@ -39,7 +39,7 @@ const rejects = (p: Promise<unknown>, re: RegExp) => assert.rejects(p, (e: Error
 const db = new Db(process.env.CONTRACT_DB ?? "conceive_contract");
 db.recreate();
 db.file(read("supabase/tests/mock_supabase.sql"));
-db.file(read("supabase/migrations/20261121000000_init.sql"));
+db.file(read("supabase/Supabase-completo.sql"));
 db.sql(`
   insert into auth.users (id, email) values
     ('${ID.admin}','admin@x.com'), ('${ID.po}','po@x.com'), ('${ID.support}','support@x.com'),
@@ -438,6 +438,69 @@ const base = {
     await rejects(api.adminNotifyLog(10), /permissão/);
     as("admin");
     assert.deepEqual(await api.adminNotifyLog(10), []);
+  });
+  await step("usuários: Admin cria pelo painel (função admin-users), a senha vale e o e-mail repetido é recusado", async () => {
+    as("po");
+    await rejects(api.createStaffUser({ email: "x@x.com", name: "X Y", role: "SUPPORT", password: "senhaforte123" }), /permiss|negad|admin/i);
+    as("admin");
+    await rejects(api.createStaffUser({ email: "novo1@x.com", name: "Novo Um", role: "SUPPORT", password: "curta" }), /senha/i);
+    const r = await api.createStaffUser({ email: "novo1@x.com", name: "Novo Um", role: "SUPPORT", password: "senhaforte123" });
+    assert.ok(r.user_id);
+    assert.equal(fakePasswords.get(r.user_id), "senhaforte123");
+    const st = (await api.adminListStaff()).find((m) => m.email === "novo1@x.com")!;
+    assert.equal(st.role, "SUPPORT");
+    assert.equal(st.mfa_enrolled, false);
+    await rejects(api.createStaffUser({ email: "novo1@x.com", name: "Novo Um", role: "SUPPORT", password: "senhaforte123" }), /já|existe|cadastrad/i);
+    await api.setStaffPassword(r.user_id, "outrasenha456");
+    assert.equal(fakePasswords.get(r.user_id), "outrasenha456");
+  });
+  await step("minha senha: exige sessão e 10+ caracteres", async () => {
+    as("admin");
+    await rejects(api.changeMyPassword("curta"), /10 caracteres/);
+    await api.changeMyPassword("minhasenha123");
+    assert.equal(fakePasswords.get(ID.admin), "minhasenha123");
+  });
+  await step("autenticador: só Admin altera; com MFA desligado o login simples já vale como equipe", async () => {
+    as("po");
+    await rejects(api.adminGetSecurity(), /permissão/);
+    await rejects(api.adminSetMfaRequired(false), /permissão/);
+    as("po", "aal1");
+    assert.equal((await api.myContext()).role, null, "com MFA exigido, aal1 não é equipe");
+    as("admin");
+    assert.equal((await api.adminGetSecurity()).mfa_required, true);
+    await api.adminSetMfaRequired(false);
+    as("po", "aal1");
+    const c = await api.myContext();
+    assert.equal(c.role, "PO");
+    assert.equal(c.mfa_required, false);
+    as("admin");
+    await api.adminSetMfaRequired(true);
+    as("po", "aal1");
+    assert.equal((await api.myContext()).role, null);
+    as("admin");
+    await api.adminSetUserMfa(ID.po, true);
+    as("po", "aal1");
+    assert.equal((await api.myContext()).role, "PO", "usuário dispensado entra só com a senha");
+    as("admin");
+    await api.adminSetUserMfa(ID.po, false);
+    db.sql(`insert into auth.mfa_factors (user_id, status, factor_type) values ('${ID.po}','verified','totp')`);
+    assert.equal((await api.adminListStaff()).find((m) => m.id === ID.po)!.mfa_enrolled, true);
+    assert.equal(await api.adminResetMfa(ID.po), 1);
+    assert.equal((await api.adminListStaff()).find((m) => m.id === ID.po)!.mfa_enrolled, false);
+  });
+  await step("edição: solicitação, nome da unidade e remoção de unidade", async () => {
+    as("support");
+    await rejects(api.updateRequestFields(id2, { title: "Novo título válido" }), /permissão/);
+    as("po");
+    await api.updateRequestFields(id2, { title: "Título corrigido pelo PO", requester_phone: "(84) 98888-7777" });
+    const d = (await api.getRequestDetail(id2))!;
+    assert.equal(d.title, "Título corrigido pelo PO");
+    await rejects(api.updateRequestFields(id2, { title: "ab" }), /título/i);
+    as("admin");
+    await api.renameUnit(ID.unitK, "Unidade Central");
+    await rejects(api.deleteUnit(ID.unitK), /em uso|solicita/i);
+    const u = await api.addUnit(ID.clinicK, "Temporária");
+    await api.deleteUnit(u);
   });
   await step("tarefa externa: sem funções disponíveis, a mensagem é amigável", async () => {
     as("po");

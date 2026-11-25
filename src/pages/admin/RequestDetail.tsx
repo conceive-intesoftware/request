@@ -3,8 +3,9 @@ import * as api from "../../lib/api";
 import type { Ctx, Detail } from "../../lib/types";
 import { MODULES, PRIORITIES, REQUESTER_ROLES, STATUSES, TYPES, labelOf } from "../../lib/labels";
 import { errMsg, fmtBytes, fmtDateTime } from "../../lib/format";
-import { formatPhoneBR, whatsappLink } from "../../lib/phone";
-import { Banner, Modal, Select, Spinner } from "../../components/ui";
+import { formatPhoneBR, maskPhoneInput, whatsappLink } from "../../lib/phone";
+import { Banner, Field, Modal, Select, Spinner } from "../../components/ui";
+import { Icon, type IconName } from "../../components/Icon";
 import { AuditTrail } from "./AuditTrail";
 
 type Tab = "detalhes" | "priorizacao" | "comentarios" | "auditoria";
@@ -69,6 +70,7 @@ export function RequestDetail({
           <nav className="tabs" role="tablist">
             {(["detalhes", "priorizacao", "comentarios", ...(d.audit ? ["auditoria"] : [])] as Tab[]).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+                <Icon name={({ detalhes: "clipboard", priorizacao: "sliders", comentarios: "message", auditoria: "history" } as Record<Tab, IconName>)[t]} size={15} />
                 {{ detalhes: "Detalhes", priorizacao: "Priorização", comentarios: `Comentários (${d.comments.length})`, auditoria: "Auditoria" }[t]}
               </button>
             ))}
@@ -92,6 +94,7 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
   const [linkId, setLinkId] = useState("");
   const [ext, setExt] = useState({ system: d.external_system ?? "", id: d.external_id ?? "" });
   const [tags, setTags] = useState(d.tags.join(", "));
+  const [editing, setEditing] = useState(false);
   useEffect(() => { setExt({ system: d.external_system ?? "", id: d.external_id ?? "" }); }, [d.external_system, d.external_id]);
 
   async function openAttachment(path: string) {
@@ -112,8 +115,13 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
     await run(() => api.mergeRequest(d.id, target.id), () => setMergeProto(""));
   }
 
+  if (editing) return <EditForm d={d} can={can} busy={busy} run={run} onCancel={() => setEditing(false)} />;
+
   return (
     <div className="stack">
+      {can("request:edit") && (
+        <div className="row"><button className="btn btn-sm" onClick={() => setEditing(true)}><Icon name="edit" size={14} /> Editar dados da solicitação</button></div>
+      )}
       <dl className="kv">
         <div><dt>Clínica / unidade</dt><dd>{d.clinic_name ?? <span className="warn">{d.pending_clinic_name} (novo vínculo)</span>}{d.unit_name ? ` — ${d.unit_name}` : ""}</dd></div>
         <div>
@@ -182,14 +190,14 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
       {can("request:merge") && !d.merged_into && (
         <form className="row" onSubmit={(e) => void doMerge(e)}>
           <input className="input" placeholder="Digite o protocolo da solicitação principal" value={mergeProto} onChange={(e) => setMergeProto(e.target.value)} aria-label="Protocolo para mesclar" />
-          <button className="btn" disabled={busy || !mergeProto.trim()}>Mesclar nesta</button>
+          <button className="btn" disabled={busy || !mergeProto.trim()}><Icon name="merge" size={15} /> Mesclar nesta</button>
         </form>
       )}
 
       {!d.clinic_id && can("request:link_clinic") && (
         <div className="row">
           <Select value={linkId} onChange={setLinkId} options={clinics.map((c) => [c.id, c.name] as const)} placeholder="Vincular a uma clínica cadastrada…" ariaLabel="Clínica" />
-          <button className="btn" disabled={busy || !linkId} onClick={() => void run(() => api.linkClinic(d.id, linkId, null))}>Vincular</button>
+          <button className="btn" disabled={busy || !linkId} onClick={() => void run(() => api.linkClinic(d.id, linkId, null))}><Icon name="link" size={15} /> Vincular</button>
         </div>
       )}
 
@@ -207,7 +215,7 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
         <form className="row" onSubmit={(e) => { e.preventDefault(); void run(() => api.setExternalRef(d.id, ext.system, ext.id)); }}>
           <Select value={ext.system} onChange={(s) => setExt({ ...ext, system: s })} options={[["REDMINE", "Redmine"], ["PIPEFY", "Pipefy"]]} placeholder="Sistema externo" ariaLabel="Sistema externo" />
           <input className="input" placeholder="Digite o ID da tarefa" value={ext.id} maxLength={80} onChange={(e) => setExt({ ...ext, id: e.target.value })} aria-label="ID externo" />
-          <button className="btn" disabled={busy}>Salvar vínculo</button>
+          <button className="btn" disabled={busy}><Icon name="save" size={15} /> Salvar vínculo</button>
         </form>
       )}
       {can("request:export_dev") && !d.external_id && (
@@ -224,14 +232,14 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
       {can("request:prioritize") && (
         <form className="row" onSubmit={(e) => { e.preventDefault(); void run(() => api.setTags(d.id, tags.split(",").map((t) => t.trim()).filter(Boolean))); }}>
           <input className="input" placeholder="Digite as tags, separadas por vírgula" value={tags} onChange={(e) => setTags(e.target.value)} aria-label="Tags" />
-          <button className="btn" disabled={busy}>Salvar tags</button>
+          <button className="btn" disabled={busy}><Icon name="tag" size={15} /> Salvar tags</button>
         </form>
       )}
       {!can("request:prioritize") && d.tags.length > 0 && <p>{d.tags.map((t) => <span key={t} className="tag outline">{t}</span>)}</p>}
 
       {can("request:archive") && (
         <button className="btn btn-danger" disabled={busy} onClick={() => { if (confirm("Arquivar esta solicitação? Ela não é excluída, apenas ocultada.")) void run(() => api.archiveRequest(d.id), onClose); }}>
-          Arquivar
+          <Icon name="archive" size={15} /> Arquivar
         </button>
       )}
     </div>
@@ -303,5 +311,63 @@ function Comments({ d, can, busy, run }: Common) {
         </form>
       )}
     </div>
+  );
+}
+
+
+/** Edição dos dados da solicitação. Só envia o que mudou; o banco valida de novo e a auditoria guarda antes/depois. */
+function EditForm({ d, can, busy, run, onCancel }: Common & { onCancel: () => void }) {
+  const pii = can("pii:view");
+  const initial = {
+    title: d.title, description: d.description, module: d.module, type: d.type,
+    requester_name: d.requester_name, requester_role: d.requester_role,
+    whatsapp: d.pii_masked ? "" : formatPhoneBR(d.whatsapp), requester_email: d.requester_email ?? "",
+  };
+  const [v, setV] = useState(initial);
+  const [err, setErr] = useState<string | null>(null);
+  const set = (k: keyof typeof initial, val: string) => setV((p) => ({ ...p, [k]: val }));
+
+  function save(e: FormEvent) {
+    e.preventDefault();
+    const changed: Record<string, string> = {};
+    for (const k of Object.keys(initial) as (keyof typeof initial)[]) {
+      if (!pii && (k === "requester_name" || k === "whatsapp" || k === "requester_email")) continue;
+      if (v[k].trim() !== initial[k].trim()) changed[k] = v[k].trim();
+    }
+    if (Object.keys(changed).length === 0) { setErr("Nenhuma alteração para salvar."); return; }
+    if (changed.title !== undefined && (changed.title.length < 5 || changed.title.length > 140)) { setErr("O título precisa ter de 5 a 140 caracteres."); return; }
+    if (changed.description !== undefined && (changed.description.length < 20 || changed.description.length > 8000)) { setErr("A descrição precisa ter de 20 a 8000 caracteres."); return; }
+    setErr(null);
+    void run(() => api.updateRequestFields(d.id, changed), onCancel);
+  }
+
+  return (
+    <form className="stack" onSubmit={save}>
+      <Banner kind="info">As alterações ficam registradas na auditoria, com o valor anterior e o novo.</Banner>
+      {err && <Banner>{err}</Banner>}
+      <Field label="Título" htmlFor="e-title"><input id="e-title" className="input" maxLength={140} value={v.title} onChange={(e) => set("title", e.target.value)} /></Field>
+      <Field label="Descrição" htmlFor="e-desc"><textarea id="e-desc" className="input" rows={7} maxLength={8000} value={v.description} onChange={(e) => set("description", e.target.value)} /></Field>
+      <div className="grid2">
+        <Field label="Módulo" htmlFor="e-mod"><Select id="e-mod" value={v.module} onChange={(x) => set("module", x)} options={MODULES} /></Field>
+        <Field label="Tipo de demanda" htmlFor="e-type"><Select id="e-type" value={v.type} onChange={(x) => set("type", x)} options={TYPES} /></Field>
+      </div>
+      {pii ? (
+        <fieldset>
+          <legend>Solicitante</legend>
+          <div className="grid2">
+            <Field label="Nome" htmlFor="e-name"><input id="e-name" className="input" maxLength={120} value={v.requester_name} onChange={(e) => set("requester_name", e.target.value)} /></Field>
+            <Field label="Cargo / função" htmlFor="e-role"><Select id="e-role" value={v.requester_role} onChange={(x) => set("requester_role", x)} options={REQUESTER_ROLES} /></Field>
+            <Field label="WhatsApp" htmlFor="e-wa"><input id="e-wa" className="input" inputMode="tel" value={v.whatsapp} onChange={(e) => set("whatsapp", maskPhoneInput(e.target.value))} /></Field>
+            <Field label="E-mail" htmlFor="e-mail" hint="Deixe vazio para remover."><input id="e-mail" className="input" type="email" maxLength={160} value={v.requester_email} onChange={(e) => set("requester_email", e.target.value)} /></Field>
+          </div>
+        </fieldset>
+      ) : (
+        <p className="hint">Seu perfil não pode editar os dados pessoais do solicitante.</p>
+      )}
+      <div className="row">
+        <button className="btn btn-primary" disabled={busy}><Icon name="save" size={16} /> Salvar alterações</button>
+        <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancelar</button>
+      </div>
+    </form>
   );
 }

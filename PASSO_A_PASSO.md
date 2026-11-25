@@ -16,7 +16,7 @@ Ordem: primeiro o Supabase (banco), depois o GitHub (site). Não pule a Parte 1,
 
 ### 1.2 Criar as tabelas, regras de segurança e auditoria
 1. No menu lateral: **SQL Editor** → **New query**.
-2. Abra o arquivo `supabase/migrations/20261121000000_init.sql` deste projeto, copie **tudo** e cole no editor.
+2. Abra o arquivo **`supabase/Supabase-completo.sql`** deste projeto (é o único arquivo de banco de que você precisa), copie **tudo** e cole no editor. A Parte B dele tem chaves opcionais (primeiro admin, clínicas iniciais, e-mails, agendamentos): deixe como está agora e use-as quando chegar nos passos 1.3, 1.5 e Parte 5.
 3. Clique em **Run**.
 4. O Supabase pode perguntar sobre "destructive operations" (o script contém `drop trigger/policy if exists` e `revoke`). É esperado: confirme com **Run this query**.
 5. Resultado esperado: `Success. No rows returned`.
@@ -25,10 +25,12 @@ Ordem: primeiro o Supabase (banco), depois o GitHub (site). Não pule a Parte 1,
 >
 > **Anexos de 50 MB:** o limite do bucket já está em 50 MB. O Supabase também tem um limite global (menu **Storage → Settings → Upload file size limit**). Se um vídeo grande for recusado mesmo assim, confira esse valor (o plano gratuito costuma permitir no máximo 50 MB). Não consegui testar o envio de arquivos grandes contra o Supabase real.
 
+> **Parte B do Supabase-completo.sql:** para usar uma opção, troque o valor na seção `CONFIGURAÇÃO` (ex.: `v_admin_email := 'voce@empresa.com.br'`, `v_clinicas := true`) e rode o arquivo inteiro de novo.
+
 > O script é seguro para rodar de novo. Se algum dia der erro de “function not found” no site, rode `notify pgrst, 'reload schema';` no SQL Editor.
 
 ### 1.3 (Opcional) Cadastrar as clínicas iniciais
-Abra `supabase/seed_clinics.sql`, edite a lista (já traz Kardiomov, Med Clínica Goianinha, Hospital de Olhos de Parnamirim e Clínica de Olhos Santa Beatriz, tirados da sua planilha) e rode no SQL Editor. Depois você gerencia tudo pela tela **Clínicas** do painel.
+No `supabase/Supabase-completo.sql`, Parte B, troque `v_clinicas := false` por `true` e rode o arquivo de novo (traz Kardiomov, Med Clínica Goianinha, Hospital de Olhos de Parnamirim e Clínica de Olhos Santa Beatriz, tirados da sua planilha). Depois você gerencia tudo pela tela **Clínicas** do painel.
 
 ### 1.4 Ligar o login anônimo (é o que permite o cliente enviar sem cadastro)
 1. **Authentication** → **Sign In / Providers**.
@@ -38,8 +40,8 @@ Abra `supabase/seed_clinics.sql`, edite a lista (já traz Kardiomov, Med Clínic
 ### 1.5 Criar o seu usuário e torná-lo administrador
 1. **Authentication** → **Users** → **Add user** → **Create new user**.
 2. Informe seu e-mail e uma senha forte. Marque a opção de **confirmar o e-mail automaticamente** (Auto Confirm User), se aparecer.
-3. Volte ao **SQL Editor**, abra `supabase/bootstrap_admin.sql`, troque `voce@suaempresa.com.br` pelo seu e-mail e `Seu Nome Aqui` pelo seu nome, e clique em **Run**.
-4. A consulta final deve mostrar 1 linha com `role = ADMIN`.
+3. Volte ao **SQL Editor**, abra o `supabase/Supabase-completo.sql`, na Parte B troque `v_admin_email := null` pelo seu e-mail entre aspas (e `v_admin_nome` pelo seu nome) e clique em **Run**.
+4. A mensagem `ADMIN: … liberado como administrador` aparece em *Messages*. Confira em **Table Editor → profiles**: 1 linha com `role = ADMIN`.
 
 ### 1.6 Copiar a URL e a chave pública
 1. **Project Settings** → **API Keys**.
@@ -118,9 +120,10 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 4. Você deve ver a solicitação de teste na lista. Teste: abrir, mudar status, comentar com “Resposta pública” e conferir no link de acompanhamento.
 
 ### Adicionar a equipe
-1. No Supabase: **Authentication → Users → Add user** (e-mail + senha + confirmar automaticamente). Passe a senha à pessoa.
-2. No painel: **Equipe** → informe o mesmo e-mail, o nome e o papel → **Liberar acesso**.
-3. A pessoa entra e cadastra o próprio autenticador no primeiro login.
+Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
+1. **Equipe → Novo usuário**: e-mail, nome, papel e senha temporária (o botão de recarregar gera uma senha forte).
+2. Entregue a senha à pessoa com segurança. Ela entra e pode trocá-la em **Alterar minha senha** (menu lateral).
+3. Sem a função publicada, o caminho antigo continua valendo: crie o usuário em *Authentication → Users* e libere o acesso por e-mail na tela Equipe.
 
 | Papel | O que pode |
 |---|---|
@@ -135,14 +138,14 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 
 ## Parte 5 — Recursos opcionais da versão 2
 
-> **Se você já tinha a versão 1 no ar:** rode de novo o arquivo `supabase/migrations/20261121000000_init.sql` inteiro no SQL Editor (ele é seguro para repetir e não apaga dados) e publique o site novamente.
+> **Se você já tinha a versão 1 no ar:** rode de novo o arquivo `supabase/Supabase-completo.sql` inteiro no SQL Editor (ele é seguro para repetir e não apaga dados) e publique o site novamente.
 
 ### 5.1 E-mails automáticos (Resend + função `notify`)
 1. Crie conta em resend.com, **verifique o seu domínio** (Domains) e crie uma **API key**.
 2. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `notify`, cole o conteúdo de `supabase/functions/notify/index.ts`. **Desligue "Enforce JWT verification"** (o banco chama a função sem login; quem protege é o segredo).
 3. Em **Edge Functions → Secrets**, cadastre: `WEBHOOK_SECRET` (frase longa e aleatória), `RESEND_API_KEY`, `MAIL_FROM` (ex.: `Conceive <contato@seudominio.com.br>`), `TEAM_EMAILS` (e-mails da equipe, separados por vírgula) e `SITE_URL` (endereço do site no GitHub Pages).
 4. Em **Database → Extensions**, confirme que `pg_net` está ligada.
-5. Abra `supabase/configurar_emails.sql`, troque a URL e o segredo (o mesmo do passo 3) e rode no SQL Editor.
+5. No `supabase/Supabase-completo.sql`, Parte B, preencha `v_notify_url` e `v_notify_secret` (o mesmo segredo do passo 3) e rode o arquivo de novo.
 6. Teste: envie uma solicitação com e-mail. O cliente recebe o link; a equipe recebe o aviso.
 
 ### 5.2 Criar tarefa no Redmine/Pipefy (função `external-task`)
@@ -155,7 +158,7 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 
 ### 5.2b Alerta de solicitações paradas (SLA)
 Não precisa configurar nada: o painel já marca em vermelho **sem resposta** (Recebido há mais de 3 dias sem resposta da equipe, ou cliente respondeu e a equipe não voltou) e **parada** (Em análise ou Em desenvolvimento sem movimentação há mais de 15 dias). Use o filtro **Atraso** na lista; a tela **Métricas** mostra o total. Pedidos concluídos, arquivados, mesclados ou importados da planilha antiga não entram na conta.
-- **Resumo diário por e-mail (opcional):** rode `supabase/agendar_resumo_sla.sql` (precisa de `pg_cron` e dos e-mails já configurados). Para mudar os prazos, veja o comentário no próprio arquivo.
+- **Resumo diário por e-mail (opcional):** troque `v_cron_sla := true` na Parte B do `Supabase-completo.sql` (precisa de `pg_cron` e dos e-mails já configurados). Para mudar os prazos, veja o comentário no topo do arquivo.
 - Os prazos contam dias corridos, não dias úteis.
 
 ### 5.3 Roadmap público e votos
@@ -166,9 +169,28 @@ Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas 
 
 ---
 
+## Parte 6 — Criar e editar usuários dentro do painel (versão 3)
+
+1. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `admin-users`, cole `supabase/functions/admin-users/index.ts`. Deixe **"Enforce JWT verification" LIGADO**. A chave `SUPABASE_SERVICE_ROLE_KEY` já é fornecida automaticamente pelo Supabase; não a coloque no site nem no GitHub.
+2. A função só age se quem chama for Admin (ela confere no banco antes de usar a chave de serviço).
+3. Senha: de 10 a 72 caracteres, com letras e números.
+4. Em **Equipe → Editar**: trocar nome, papel, ativar/desativar, redefinir a senha e controlar o autenticador.
+
+### Entrada com autenticador (MFA) controlada pelo Admin
+- **Equipe → Entrada com autenticador**: chave geral. Ligada (padrão), todos usam senha + código do aplicativo. Desligada, quem tem a senha entra direto. **Desligar reduz a segurança**; use só em emergência ou em testes.
+- **Dispensar por usuário**: em *Editar*, marque "Dispensar o autenticador".
+- **Redefinir autenticador**: remove o aplicativo cadastrado (celular perdido); a pessoa cadastra outro no próximo acesso.
+- Tudo isso fica na auditoria.
+
+### Outras edições
+- Solicitações: botão **Editar dados da solicitação** (Admin e PO).
+- Clínicas: **Renomear** clínica e unidade; **remover unidade** (só se nenhuma solicitação a usa).
+
+---
+
 ## Parte 4 — Manutenção
 
-- **Limpeza mensal:** automática se você rodar uma vez `supabase/agendar_limpeza.sql` (precisa ligar a extensão `pg_cron`). Sem isso, rode `supabase/cleanup_anonymous_users.sql` no SQL Editor (1 minuto). Cada cliente que envia um pedido vira um usuário anônimo e o Supabase não limpa isso sozinho. Os links de acompanhamento **continuam funcionando**.
+- **Limpeza mensal:** automática com `v_cron_limpeza := true` na Parte B (precisa ligar a extensão `pg_cron`). Sem isso, use `v_limpar_agora := true` uma vez por mês. Cada cliente que envia um pedido vira um usuário anônimo e o Supabase não limpa isso sozinho. Os links de acompanhamento **continuam funcionando**.
 - **Backup:** no plano gratuito do Supabase não há restauração pontual. Periodicamente use o botão de exportar do **Table Editor** ou o botão **Exportar CSV** do painel. Para uso sério, considere o plano pago.
 - **Projeto pausado:** projetos gratuitos do Supabase podem ser pausados após um período sem uso. Com acesso regular isso não acontece; se acontecer, basta clicar em **Restore project** no painel do Supabase.
 - **Atualizar o site:** qualquer alteração enviada para a branch `main` publica de novo automaticamente.
@@ -197,15 +219,15 @@ Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas 
 
 Testado neste ambiente, **contra um PostgreSQL 16 real**, simulando o Supabase (papéis `anon`/`authenticated`, claims do JWT e schemas `auth`/`storage`):
 
-- **317 verificações no banco**: permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração; e na versão 2: votos, roadmap público, respostas do cliente, CSAT, métricas, importação e o envio do webhook de e-mail (com um `pg_net` simulado).
-- **9 verificações** nos scripts auxiliares (admin, clínicas, limpeza).
-- **35 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
-- **32 testes das Edge Functions** (e-mail e tarefas Redmine/Pipefy) com um `fetch` simulado.
+- **358 verificações no banco** (mais a Parte B ligada: admin, clínicas, e-mails e limpeza de anônimos): permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração; e na versão 2: votos, roadmap público, respostas do cliente, CSAT, métricas, importação e o envio do webhook de e-mail (com um `pg_net` simulado).
+- **39 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
+- **40 testes das Edge Functions** (e-mail, tarefas Redmine/Pipefy e criação de usuários) com um `fetch` simulado.
 - **31 testes unitários**: rascunho, importação de CSV, tema, telefone, validação, CSV seguro, anexos (limite de 50 MB exato, nome do print colado) e comparação automática dos enums e DDDs do site com os do SQL.
-- **52 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe; mais rascunho após recarregar, roadmap e votos, resposta do cliente, tarefa externa, avaliação, métricas, importação de CSV, tema e CSP sem violações.
+- **59 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe; mais rascunho após recarregar, roadmap e votos, resposta do cliente, tarefa externa, avaliação, métricas, importação de CSV, tema e CSP sem violações.
 
 **Não foi possível testar aqui** (exige internet e as suas contas):
 - O `npm install` + `vite build` reais (o ambiente não tinha rede): validei a compilação com esbuild e os tipos com declarações simplificadas. O primeiro *build* no GitHub é o teste final; se acusar algum erro de tipo, ele aparece no log da aba Actions.
+- **A função `admin-users` contra o Auth real do Supabase**: testada com um Auth simulado. Se a criação falhar, veja os logs da função.
 - **Resend, Redmine e Pipefy reais**: as Edge Functions foram testadas só com respostas simuladas. A API do Pipefy (GraphQL) muda com frequência; se der erro, o log da função mostra a resposta.
 - **A CSP contra o Turnstile real.** Se o formulário travar depois de publicar, crie a variável `CSP_DESATIVADA` = `true` no GitHub (Settings → Variables) e publique de novo.
 - A comunicação com o Supabase de verdade (substituída por um banco local equivalente), o widget do Turnstile e o envio real de arquivos ao Storage (inclusive o de 50 MB). O Ctrl + V foi testado com o evento de colar simulado, não com a área de transferência real do Windows.
