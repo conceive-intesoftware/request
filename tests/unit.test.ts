@@ -70,7 +70,7 @@ const ok: RequestFormValues = {
   requesterName: "Sarah Silva",
   requesterRole: "ADMINISTRADOR",
   whatsapp: "(84) 99849-3000",
-  email: "",
+  email: "sarah@clinica.com",
   module: "FINANCEIRO",
   type: "MELHORIA_FLUXO",
   title: "Pagamento antecipado",
@@ -82,6 +82,12 @@ test("detecta cada campo inválido", () => {
     ...ok, clinicId: "", requesterName: "Al", requesterRole: "X", whatsapp: "1", module: "", type: "", title: "abc", description: "curta",
   });
   assert.deepEqual(Object.keys(e).sort(), ["clinicId", "description", "module", "requesterName", "requesterRole", "title", "type", "whatsapp"]);
+});
+test("e-mail é obrigatório e precisa ser válido", () => {
+  assert.match(validateRequestForm({ ...ok, email: "" }).email ?? "", /Informe o seu e-mail/);
+  assert.match(validateRequestForm({ ...ok, email: "   " }).email ?? "", /Informe o seu e-mail/);
+  assert.match(validateRequestForm({ ...ok, email: "isso-nao-e-email" }).email ?? "", /inválido/);
+  assert.equal(validateRequestForm({ ...ok, email: "a@b.co" }).email, undefined);
 });
 test("modo 'clínica nova' exige nome", () => {
   assert.ok(validateRequestForm({ ...ok, mode: "new", clinicId: "", pendingClinicName: "ab" }).pendingClinicName);
@@ -185,8 +191,7 @@ test("filesFromClipboard: lê imagens da área de transferência e ignora texto 
 });
 
 
-test("e-mail é opcional, mas se vier precisa ser válido", () => {
-  assert.equal(validateRequestForm({ ...ok, email: "" }).email, undefined);
+test("e-mail: formatos válidos e inválidos", () => {
   assert.equal(validateRequestForm({ ...ok, email: "ana@clinica.com.br" }).email, undefined);
   for (const bad of ["ana", "ana@", "ana@clinica", "a b@c.com"]) assert.ok(validateRequestForm({ ...ok, email: bad }).email, bad);
 });

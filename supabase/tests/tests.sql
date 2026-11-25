@@ -64,7 +64,7 @@ begin
   perform tests.login(gen_random_uuid(), 'aal1', true);
   select s.tracking_token, s.protocol into v_tok, v_proto from public.submit_request(
     p_clinic, null, p_pending, 'Maria Teste', 'RECEPCIONISTA', '84986109779',
-    'AGENDA', 'NOVA_FUNCIONALIDADE', p_title, 'Descrição suficientemente longa para passar na validação.', '{}') s;
+    'AGENDA', 'NOVA_FUNCIONALIDADE', p_title, 'Descrição suficientemente longa para passar na validação.', '{}', 'maria.teste@exemplo.com') s;
   perform tests.logout();
   select r.id into v_id from public.requests r where r.tracking_token = v_tok;
   return query select v_id, v_tok, v_proto;
@@ -158,12 +158,12 @@ begin
   select s.protocol, s.tracking_token into v_proto, v_tok from public.submit_request(
     'c0000000-0000-0000-0000-000000000001', 'd0000000-0000-0000-0000-000000000001', null,
     'Sarah Silva', 'ADMINISTRADOR', '(84) 99849-3000', 'FINANCEIRO', 'MELHORIA_FLUXO',
-    'Pagamento antecipado de percentual', 'Definimos que iremos solicitar aos pacientes um percentual antecipado.', '{}') s;
+    'Pagamento antecipado de percentual', 'Definimos que iremos solicitar aos pacientes um percentual antecipado.', '{}', 'sarah@exemplo.com') s;
   perform tests.ok(v_proto ~ '^CON-[0-9]{4}-[0-9]{4}$', 'protocolo no formato CON-AAAA-NNNN: ' || v_proto);
   perform tests.ok(v_tok ~ '^[0-9a-f]{48}$', 'token de acompanhamento com 48 hex');
   select s.protocol into v_proto2 from public.submit_request(
     null, null, 'Clínica Nova Ltda', 'Ilnara Souza', 'RECEPCIONISTA', '84986109779', 'AGENDA', 'SUGESTAO_TECNICA',
-    'Sugestão técnica de agenda', 'Exemplo de utilização: o paciente realiza um exame e o atendimento muda.', '{}') s;
+    'Sugestão técnica de agenda', 'Exemplo de utilização: o paciente realiza um exame e o atendimento muda.', '{}', 'ilnara@exemplo.com') s;
   perform tests.ok(v_proto2 <> v_proto and right(v_proto2, 4)::int = right(v_proto, 4)::int + 1, 'protocolo sequencial: ' || v_proto2);
   perform tests.logout();
   perform tests.set('proto1', v_proto); perform tests.set('token1', v_tok);
@@ -179,16 +179,16 @@ end $t$;
 do $t$
 begin
   perform tests.login('b0000000-0000-0000-0000-000000000002', 'aal1', true);
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','123','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}')$$, 'invalid_phone', 'telefone inválido rejeitado');
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','abc','Descrição longa o bastante para validar.','{}')$$, 'invalid_title', 'título curto rejeitado');
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','curta','{}')$$, 'invalid_description', 'descrição curta rejeitada');
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fu','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}')$$, 'invalid_name', 'nome curto rejeitado');
-  perform tests.fails($$select * from public.submit_request(null,null,null,'Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}')$$, 'clinic_required', 'sem clínica nem nome pendente rejeitado');
-  perform tests.fails($$select * from public.submit_request('c0000000-0000-0000-0000-000000000009',null,null,'Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}')$$, 'invalid_clinic', 'clínica inexistente rejeitada');
-  perform tests.fails($$select * from public.submit_request('c0000000-0000-0000-0000-000000000003',null,null,'Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}')$$, 'invalid_clinic', 'clínica inativa rejeitada');
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.',array['b0000000-0000-0000-0000-000000000002/nao-existe.png'])$$, 'invalid_attachment', 'anexo inexistente rejeitado');
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.',array['outro-uid/x.png'])$$, 'invalid_attachment', 'anexo de outra pasta rejeitado');
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.',array['a','b','c','d','e','f'])$$, 'too_many_attachments', 'mais de 5 anexos rejeitado');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','123','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}','t@x.com')$$, 'invalid_phone', 'telefone inválido rejeitado');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','abc','Descrição longa o bastante para validar.','{}','t@x.com')$$, 'invalid_title', 'título curto rejeitado');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','curta','{}','t@x.com')$$, 'invalid_description', 'descrição curta rejeitada');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fu','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}','t@x.com')$$, 'invalid_name', 'nome curto rejeitado');
+  perform tests.fails($$select * from public.submit_request(null,null,null,'Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}','t@x.com')$$, 'clinic_required', 'sem clínica nem nome pendente rejeitado');
+  perform tests.fails($$select * from public.submit_request('c0000000-0000-0000-0000-000000000009',null,null,'Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}','t@x.com')$$, 'invalid_clinic', 'clínica inexistente rejeitada');
+  perform tests.fails($$select * from public.submit_request('c0000000-0000-0000-0000-000000000003',null,null,'Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}','t@x.com')$$, 'invalid_clinic', 'clínica inativa rejeitada');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.',array['b0000000-0000-0000-0000-000000000002/nao-existe.png'],'t@x.com')$$, 'invalid_attachment', 'anexo inexistente rejeitado');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.',array['outro-uid/x.png'],'t@x.com')$$, 'invalid_attachment', 'anexo de outra pasta rejeitado');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X Ltda','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.',array['a','b','c','d','e','f'],'t@x.com')$$, 'too_many_attachments', 'mais de 5 anexos rejeitado');
   perform tests.logout();
   perform tests.ok(not exists (select 1 from public.requests where submitted_by = 'b0000000-0000-0000-0000-000000000002'), 'nenhuma linha criada pelas tentativas inválidas');
 end $t$;
@@ -198,9 +198,9 @@ declare i int;
 begin
   perform tests.login('b0000000-0000-0000-0000-000000000002', 'aal1', true);
   for i in 1..5 loop
-    perform * from public.submit_request(null,null,'Clínica Spam Ltda','Spammer Teste','OUTRO','84998493000','OUTRO','NOVA_FUNCIONALIDADE','Spam número ' || i,'Descrição longa o bastante para validar o envio.','{}');
+    perform * from public.submit_request(null,null,'Clínica Spam Ltda','Spammer Teste','OUTRO','84998493000','OUTRO','NOVA_FUNCIONALIDADE','Spam número ' || i,'Descrição longa o bastante para validar o envio.','{}','spam@exemplo.com');
   end loop;
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica Spam Ltda','Spammer Teste','OUTRO','84998493000','OUTRO','NOVA_FUNCIONALIDADE','Spam número 6','Descrição longa o bastante para validar o envio.','{}')$$, 'rate_limited', '6º envio em 10 min bloqueado (rate limit)');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica Spam Ltda','Spammer Teste','OUTRO','84998493000','OUTRO','NOVA_FUNCIONALIDADE','Spam número 6','Descrição longa o bastante para validar o envio.','{}','t@x.com')$$, 'rate_limited', '6º envio em 10 min bloqueado (rate limit)');
   perform tests.logout();
 end $t$;
 
@@ -222,7 +222,7 @@ begin
   select count(*) into c from public.clinics;    perform tests.ok(c = 0, 'RLS: anônimo enxerga 0 clínicas na tabela');
   perform tests.logout();
   perform tests.as_anon_role();
-  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante.','{}')$$, 'permission denied', 'role anon sem sessão não envia');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica X','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante.','{}','t@x.com')$$, 'permission denied', 'role anon sem sessão não envia');
   perform tests.logout();
 end $t$;
 
@@ -597,7 +597,7 @@ begin
   select count(*) into v_n from storage.objects; perform tests.ok(v_n = 0, 'anônimo NÃO lista arquivos (nem os próprios)');
 
   select s.tracking_token into v_tok from public.submit_request(null, null, 'Clínica com Anexo', 'Fulano Anexo', 'MEDICO', '84998493000',
-     'PRONTUARIO', 'NOVA_FUNCIONALIDADE', 'Pedido com anexo', 'Descrição longa o bastante para validar o envio.', array[v_path]) s;
+     'PRONTUARIO', 'NOVA_FUNCIONALIDADE', 'Pedido com anexo', 'Descrição longa o bastante para validar o envio.', array[v_path], 'anexo@exemplo.com') s;
   perform tests.logout();
 
   select * into a from public.request_attachments where storage_path = v_path;
@@ -673,7 +673,7 @@ begin
   select id into v_id from public.requests where tracking_token = v_tok;
   select body into b from net.calls order by id desc limit 1;
   perform tests.ok(b ->> 'event' = 'request_created' and b ->> 'client_email' = 'cliente@exemplo.com' and b ->> 'tracking_token' = v_tok and b ->> 'clinic_name' = 'Clínica Aviso', 'novo pedido dispara request_created com e-mail, token e clínica');
-  perform tests.ok(b::text !~ 'Fulano' and b::text !~ '84998493000', 'payload não carrega nome nem telefone');
+  perform tests.ok(b ->> 'requester_name' = 'Fulano de Tal' and b::text !~ '84998493000', 'payload leva só o nome (saudação do e-mail ao próprio cliente), nunca o telefone');
   perform tests.ok((select headers ->> 'x-webhook-secret' = 'segredo-teste' and url like '%/notify' from net.calls order by id desc limit 1), 'segredo vai no cabeçalho');
 
   select count(*) into n from net.calls;
@@ -699,7 +699,8 @@ begin
   select body into b from net.calls order by id desc limit 1;
   perform tests.ok(b ->> 'event' = 'client_reply' and b ->> 'body' = 'Resposta do cliente' and not (b ? 'client_email'), 'resposta do cliente dispara client_reply (só para a equipe)');
 
-  -- pedido sem e-mail: equipe é avisada, cliente não recebe nada nas mudanças
+  -- pedido antigo (importado/anterior à obrigatoriedade) sem e-mail: cliente não recebe nada nas mudanças
+  update public.requests set requester_email = null where id = tests.get('id1')::uuid;
   select count(*) into n from net.calls;
   perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
   perform public.set_request_status(tests.get('id1')::uuid, 'APROVADO_ROADMAP');
@@ -1224,6 +1225,33 @@ begin
   perform tests.ok(not has_function_privilege('authenticated', 'private.notify_event(jsonb)', 'execute'), 'notify_event não é chamável pelo cliente');
   perform tests.ok(not has_function_privilege('anon', 'public.admin_set_mfa_required(boolean)', 'execute') and not has_function_privilege('anon', 'public.admin_reset_mfa(uuid)', 'execute') and not has_function_privilege('anon', 'public.update_request_fields(uuid,jsonb)', 'execute') and not has_function_privilege('anon', 'public.admin_rename_unit(uuid,text)', 'execute'), 'anon não chama as funções novas de administração');
   perform tests.ok(has_function_privilege('authenticated', 'public.admin_set_mfa_required(boolean)', 'execute') and not has_function_privilege('authenticated', 'private.mfa_required_for(uuid)', 'execute'), 'authenticated chama a RPC, mas não o helper interno');
+end $t$;
+
+-- ───────── 24f. anexos no comentário e e-mail obrigatório ─────────
+do $t$
+declare v_id uuid; po uuid := 'a0000000-0000-0000-0000-000000000002'; v_path text; cid uuid; d jsonb;
+begin
+  select m.id into v_id from tests.mk('Pedido para anexos em comentário', null, 'Clínica Anexo Comentário') m;
+
+  v_path := po::text || '/' || gen_random_uuid() || '__print.png';
+  insert into storage.objects (bucket_id, name, owner, metadata) values ('attachments', v_path, po, '{"mimetype":"image/png","size":2048}');
+  perform tests.login(po, 'aal2');
+  cid := public.add_comment(v_id, 'Veja o print do ajuste', false, array[v_path]);
+  d := public.get_request_detail(v_id);
+  perform tests.ok(jsonb_array_length(d -> 'comments' -> 0 -> 'attachments') = 1 and d -> 'comments' -> 0 -> 'attachments' -> 0 ->> 'file_name' = 'print.png', 'imagem enviada no comentário aparece dentro do comentário');
+  perform tests.ok(jsonb_array_length(d -> 'attachments') = 0, 'e não entre os anexos da solicitação');
+  perform tests.fails(format('select public.add_comment(%L, %L, true, %L::text[])', v_id, 'reuso', array[v_path]), 'invalid_attachment', 'mesmo arquivo não anexa duas vezes');
+  perform tests.fails(format('select public.add_comment(%L, %L, true, %L::text[])', v_id, 'de outro', array[gen_random_uuid()::text || '/x.png']), 'invalid_attachment', 'arquivo de outra pasta é recusado');
+  perform tests.fails(format('select public.add_comment(%L, %L, true, %L::text[])', v_id, 'inexistente', array[po::text || '/nao-existe.png']), 'invalid_attachment', 'arquivo inexistente é recusado');
+  perform tests.fails(format('select public.add_comment(%L, %L, true, %L::text[])', v_id, 'muitos', array(select po::text || '/' || g || '.png' from generate_series(1, 6) g)), 'too_many_attachments', 'máximo de 5 anexos por comentário');
+  perform tests.logout();
+  perform tests.ok((select count(*) = 1 from public.request_comments where request_id = v_id), 'comentário recusado não deixa rastro');
+  perform tests.ok((select comment_id = cid from public.request_attachments where storage_path = v_path), 'anexo ligado ao comentário');
+
+  perform tests.login(gen_random_uuid(), 'aal1', true);
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica Sem Email','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}')$$, 'email_required', 'e-mail é obrigatório no envio');
+  perform tests.fails($$select * from public.submit_request(null,null,'Clínica Sem Email','Fulano de Tal','MEDICO','84998493000','AGENDA','NOVA_FUNCIONALIDADE','Título válido','Descrição longa o bastante para validar.','{}','   ')$$, 'email_required', 'e-mail em branco também é recusado');
+  perform tests.logout();
 end $t$;
 
 -- ───────── 22. invariantes ─────────

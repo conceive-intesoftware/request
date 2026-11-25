@@ -22,13 +22,20 @@ export function generatePassword(): string {
 export const passwordOk = (v: string) => v.length >= 10 && v.length <= 72 && /[A-Za-z]/.test(v) && /\d/.test(v);
 const PASS_HINT = "Mínimo de 10 caracteres, com letras e números.";
 
+const PAGE = 12;
+
 export function Clinics() {
   const [list, setList] = useState<ClinicAdmin[] | null>(null);
   const [name, setName] = useState("");
   const [unit, setUnit] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<string | null>(null); // "c:<id>" ou "u:<id>"
   const [draft, setDraft] = useState("");
+  const [q, setQ] = useState("");
+  const [shown, setShown] = useState(PAGE);
   const [error, setError] = useState<string | null>(null);
+  const norm = (x: string) => x.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+  const filtered = (list ?? []).filter((c) => !q.trim() || norm(c.name).includes(norm(q)) || c.clinic_units.some((u) => norm(u.name).includes(norm(q))));
+  const visible = filtered.slice(0, shown);
 
   const load = useCallback(async () => {
     try { setList(await api.listClinicsAdmin()); } catch (e) { setError(errMsg(e)); }
@@ -58,21 +65,31 @@ export function Clinics() {
       </form>
       {!list && <Spinner />}
       {list && list.length === 0 && <EmptyState icon="building" title="Nenhuma clínica cadastrada">Adicione a primeira clínica acima para liberar o formulário público.</EmptyState>}
-      {list?.map((c) => (
-        <section key={c.id} className="card clinic-card">
-          <div className="row between">
-            {editing === `c:${c.id}` ? (
-              <EditRow onSave={() => void act(async () => { await api.upsertClinic(c.id, draft.trim(), c.active); setEditing(null); })} />
-            ) : (
-              <h2 className={c.active ? "" : "muted"}><Icon name="building" size={20} className="h-ic" />{c.name} {!c.active && <span className="tag">inativa</span>}</h2>
-            )}
-            <div className="row">
-              <button className="btn btn-sm" onClick={() => startEdit(`c:${c.id}`, c.name)} aria-label={`Renomear ${c.name}`}><Icon name="edit" size={15} />Renomear</button>
-              <button className="btn btn-sm" onClick={() => void act(() => api.upsertClinic(c.id, c.name, !c.active))}>{c.active ? "Desativar" : "Reativar"}</button>
-            </div>
+      {list && list.length > 0 && (
+        <div className="row clinic-bar">
+          <div className="search-in">
+            <Icon name="search" size={16} />
+            <input className="input" type="search" placeholder="Buscar clínica ou unidade…" value={q} onChange={(e) => { setQ(e.target.value); setShown(PAGE); }} aria-label="Buscar clínica" />
           </div>
-          {c.clinic_units.length === 0 ? <p className="muted">Sem unidades.</p> : (
+          <span className="muted small">{filtered.length} de {list.length} {list.length === 1 ? "clínica" : "clínicas"}</span>
+        </div>
+      )}
+      <div className="clinic-grid">
+        {visible.map((c) => (
+          <section key={c.id} className={`card clinic-card ${c.active ? "" : "off"}`}>
+            <div className="clinic-head">
+              {editing === `c:${c.id}` ? (
+                <EditRow onSave={() => void act(async () => { await api.upsertClinic(c.id, draft.trim(), c.active); setEditing(null); })} />
+              ) : (
+                <h2 className={c.active ? "" : "muted"} title={c.name}><Icon name="building" size={17} className="h-ic" /><span>{c.name}</span>{!c.active && <span className="tag">inativa</span>}</h2>
+              )}
+              <div className="clinic-actions">
+                <button className="btn btn-ghost btn-icon" onClick={() => startEdit(`c:${c.id}`, c.name)} aria-label={`Renomear ${c.name}`} title="Renomear clínica"><Icon name="edit" size={15} /></button>
+                <button className="btn btn-sm" onClick={() => void act(() => api.upsertClinic(c.id, c.name, !c.active))}>{c.active ? "Desativar" : "Reativar"}</button>
+              </div>
+            </div>
             <ul className="unit-list">
+              {c.clinic_units.length === 0 && <li className="muted small">Sem unidades.</li>}
               {c.clinic_units.map((u) => (
                 <li key={u.id}>
                   {editing === `u:${u.id}` ? (
@@ -80,21 +97,25 @@ export function Clinics() {
                   ) : (
                     <>
                       <span className="tag outline">{u.name}</span>
-                      <button className="btn btn-ghost btn-icon" onClick={() => startEdit(`u:${u.id}`, u.name)} aria-label={`Renomear unidade ${u.name}`} title="Renomear unidade"><Icon name="edit" size={15} /></button>
+                      <button className="btn btn-ghost btn-icon" onClick={() => startEdit(`u:${u.id}`, u.name)} aria-label={`Renomear unidade ${u.name}`} title="Renomear unidade"><Icon name="edit" size={14} /></button>
                       <button className="btn btn-ghost btn-icon danger" aria-label={`Remover unidade ${u.name}`} title="Remover unidade"
-                        onClick={() => { if (window.confirm(`Remover a unidade "${u.name}"? Só é possível se nenhuma solicitação a usa.`)) void act(() => api.deleteUnit(u.id)); }}><Icon name="trash" size={15} /></button>
+                        onClick={() => { if (window.confirm(`Remover a unidade "${u.name}"? Só é possível se nenhuma solicitação a usa.`)) void act(() => api.deleteUnit(u.id)); }}><Icon name="trash" size={14} /></button>
                     </>
                   )}
                 </li>
               ))}
             </ul>
-          )}
-          <form className="row" onSubmit={(e) => { e.preventDefault(); const v = (unit[c.id] ?? "").trim(); if (v) void act(async () => { await api.addUnit(c.id, v); setUnit({ ...unit, [c.id]: "" }); }); }}>
-            <input className="input" placeholder="Digite o nome da nova unidade" value={unit[c.id] ?? ""} maxLength={160} onChange={(e) => setUnit({ ...unit, [c.id]: e.target.value })} aria-label={`Nova unidade de ${c.name}`} />
-            <button className="btn"><Icon name="plus" size={16} />Adicionar unidade</button>
-          </form>
-        </section>
-      ))}
+            <form className="row unit-add" onSubmit={(e) => { e.preventDefault(); const v = (unit[c.id] ?? "").trim(); if (v) void act(async () => { await api.addUnit(c.id, v); setUnit({ ...unit, [c.id]: "" }); }); }}>
+              <input className="input" placeholder="Nova unidade" value={unit[c.id] ?? ""} maxLength={160} onChange={(e) => setUnit({ ...unit, [c.id]: e.target.value })} aria-label={`Nova unidade de ${c.name}`} />
+              <button className="btn btn-sm"><Icon name="plus" size={14} />Adicionar unidade</button>
+            </form>
+          </section>
+        ))}
+      </div>
+      {list && filtered.length === 0 && list.length > 0 && <p className="muted">Nenhuma clínica encontrada para “{q}”.</p>}
+      {filtered.length > visible.length && (
+        <div className="row center"><button className="btn" onClick={() => setShown(shown + PAGE)}>Mostrar mais {Math.min(PAGE, filtered.length - visible.length)} de {filtered.length - visible.length} restantes</button></div>
+      )}
     </div>
   );
 }

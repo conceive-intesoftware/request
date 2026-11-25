@@ -105,6 +105,7 @@ export interface Detail {
     author_name: string | null;
     author_role: string | null;
     author_kind: "STAFF" | "CLIENT";
+    attachments: { id: string; file_name: string; mime_type: string; size_bytes: number; storage_path: string }[];
   }[];
   duplicates: { id: string; protocol: string; title: string; clinic_name: string | null }[];
   tags: string[];

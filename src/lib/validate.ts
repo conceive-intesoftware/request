@@ -33,7 +33,8 @@ export function validateRequestForm(v: RequestFormValues): FormErrors {
   else if (name.length > 120) e.requesterName = "Nome muito longo.";
   if (!has(REQUESTER_ROLES, v.requesterRole)) e.requesterRole = "Selecione seu cargo/função.";
   if (normalizeBrPhone(v.whatsapp) === null) e.whatsapp = "WhatsApp inválido. Ex.: (84) 99999-9999";
-  if (v.email.trim() !== "" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.email.trim())) e.email = "E-mail inválido. Confira o endereço digitado.";
+  if (v.email.trim() === "") e.email = "Informe o seu e-mail: é para ele que enviaremos a confirmação e o link de acompanhamento.";
+  else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.email.trim())) e.email = "E-mail inválido. Confira o endereço digitado.";
   if (!has(MODULES, v.module)) e.module = "Selecione o módulo.";
   if (!has(TYPES, v.type)) e.type = "Selecione o tipo de demanda.";
   const title = v.title.trim();

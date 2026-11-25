@@ -49,7 +49,7 @@ export default function Solicitar() {
   const [honeypot, setHoneypot] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
-  const [done, setDone] = useState<{ protocol: string; token: string } | null>(null);
+  const [done, setDone] = useState<{ protocol: string; token: string; email: string } | null>(null);
 
   // autocomplete
   const [query, setQuery] = useState("");
@@ -172,7 +172,7 @@ export default function Solicitar() {
     setServerError(null);
     if (honeypot) {
       // robô: finge sucesso sem enviar nada
-      setDone({ protocol: "CON-0000-0000", token: "" });
+      setDone({ protocol: "CON-0000-0000", token: "", email: "" });
       return;
     }
     const errs = validateRequestForm(v);
@@ -191,7 +191,7 @@ export default function Solicitar() {
           requesterName: v.requesterName.trim(),
           requesterRole: v.requesterRole,
           whatsapp: v.whatsapp,
-          email: v.email.trim() || null,
+          email: v.email.trim(),
           module: v.module,
           type: v.type,
           title: v.title.trim(),
@@ -202,7 +202,7 @@ export default function Solicitar() {
       );
       clearDraft();
       setDraftNote(null);
-      setDone({ protocol: r.protocol, token: r.trackingToken });
+      setDone({ protocol: r.protocol, token: r.trackingToken, email: v.email.trim() });
       window.scrollTo({ top: 0 });
     } catch (e2) {
       setServerError(errMsg(e2));
@@ -228,6 +228,7 @@ export default function Solicitar() {
           <p className="protocol">{done.protocol}</p>
           {done.token ? (
             <>
+              <p className="mail-note"><Icon name="mail" size={18} /> <span>Enviamos a confirmação de recebimento, com o link de acompanhamento, para <strong>{done.email}</strong>. Se não encontrar, verifique a caixa de spam.</span></p>
               <p>
                 <strong>Guarde o link abaixo.</strong> Ele é a única forma de acompanhar o andamento (não há login para clientes).
               </p>
@@ -359,8 +360,8 @@ export default function Solicitar() {
           <input id="wa" className="input" inputMode="tel" autoComplete="tel" placeholder="Digite o número com DDD" value={v.whatsapp} onChange={(e) => set("whatsapp", maskPhoneInput(e.target.value))} />
         </Field>
 
-        <Field label="E-mail (opcional)" htmlFor="email" error={errors.email} hint="Se informar, enviaremos o link de acompanhamento e avisaremos quando houver novidades.">
-          <input id="email" className="input" type="email" inputMode="email" autoComplete="email" placeholder="Digite o seu e-mail" maxLength={160} value={v.email} onChange={(e) => set("email", e.target.value)} />
+        <Field label="E-mail" htmlFor="email" error={errors.email} hint="Enviaremos a confirmação e o link de acompanhamento para este endereço, e avisaremos quando houver novidades.">
+          <input id="email" className="input" type="email" required inputMode="email" autoComplete="email" placeholder="Digite o seu e-mail" maxLength={160} value={v.email} onChange={(e) => set("email", e.target.value)} />
         </Field>
 
         <div className="grid2">

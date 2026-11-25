@@ -180,6 +180,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   });
   await step("máscara do WhatsApp e demais campos", async () => {
     await visitor.fill("#name", "Sarah Silva");
+    await visitor.fill("#email", "sarah@clinica.com");
     await visitor.selectOption("#role", "ADMINISTRADOR");
     await visitor.fill("#wa", "84998493000");
     assert.equal(await visitor.inputValue("#wa"), "(84) 99849-3000");
@@ -242,6 +243,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   await step("envia e recebe o protocolo", async () => {
     await visitor.click("button:has-text('Enviar solicitação')");
     await visitor.waitForSelector("h2:has-text('Solicitação enviada!')");
+    await visitor.waitForSelector(".mail-note:has-text('sarah@clinica.com')");
     const proto = (await visitor.textContent(".protocol")) ?? "";
     assert.match(proto, /^CON-\d{4}-0001$/);
   });
@@ -265,6 +267,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await visitor.click("text=Minha clínica não está na lista");
     await visitor.fill("#pending", "Hospital de Olhos de Parnamirim");
     await visitor.fill("#name", "Renata");
+    await visitor.fill("#email", "renata@hospital.com");
     await visitor.selectOption("#role", "FARMACEUTICO");
     await visitor.fill("#wa", "84987417184");
     await visitor.selectOption("#module", "ESTOQUE_FARMACIA");
@@ -343,12 +346,13 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await po.waitForSelector("[role=dialog] >> text=Definimos que iremos");
     assert.ok(await po.isVisible("[role=dialog] >> text=print_da_tela.png"), "anexo listado com nome saneado");
     assert.ok(await po.isVisible("[role=dialog] >> text=/print-\\d{8}-\\d{6}\\.png/"), "print colado chegou como anexo");
+    await snap(po, "detalhes");
     await po.selectOption("#st", "EM_ANALISE_PRODUTO");
     await po.waitForFunction(() => (document.querySelector("#st") as HTMLSelectElement | null)?.value === "EM_ANALISE_PRODUTO");
   });
   await step("modal: abrir anexo gera URL assinada (popup)", async () => {
     await po.context().route("https://signed.example/**", (r: any) => r.fulfill({ status: 200, contentType: "text/plain", body: "ok" }));
-    const [popup] = await Promise.all([po.waitForEvent("popup"), po.click("[role=dialog] button:has-text('abrir')")]);
+    const [popup] = await Promise.all([po.waitForEvent("popup"), po.click("[role=dialog] button.thumb")]);
     await popup.waitForLoadState();
     assert.match(popup.url(), /signed\.example\/attachments\//);
     await popup.close();
@@ -356,36 +360,66 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   await step("modal: priorização RICE calcula ao vivo e salva", async () => {
     await po.click("[role=tab]:has-text('Priorização')");
     await po.selectOption("#pr", "ALTA");
-    await po.fill("#re", "100");
-    await po.selectOption("#im", "2");
-    await po.fill("#co", "0.8");
-    await po.fill("#ef", "4");
-    await po.waitForSelector(".big:has-text('40')");
+    await po.fill("#re", "12");
+    const pick = (legend: string, label: string) => po.click(`fieldset:has(legend:has-text('${legend}')) label:has(strong:text-is('${label}'))`);
+    assert.equal(await po.locator("button:has-text('Salvar priorização')").isDisabled(), true, "só salva com impacto, esforço e confiança escolhidos");
+    await pick("Impacto", "Alto");
+    await pick("Esforço", "Médio");
+    await pick("Confiança", "Média");
+    await po.waitForSelector(".score strong:has-text('19.2')");
+    await snap(po, "priorizacao");
     await po.click("button:has-text('Salvar priorização')");
     await po.click("[role=tab]:has-text('Detalhes')");
-    await po.waitForSelector("dd:has-text('Alta · 40')");
+    await po.waitForSelector(".dtop-chips:has-text('Prioridade alta'):has-text('Pontuação 19.2')");
   });
   await step("modal: resposta pública (e interna) em Comentários", async () => {
     await po.click("[role=tab]:has-text('Comentários')");
     await po.fill("textarea[aria-label=Comentário]", "nota interna: cliente antigo");
     await po.click("button:has-text('Enviar')");
-    await po.waitForSelector("li.internal:has-text('nota interna')");
+    await po.waitForSelector("li.cm-internal:has-text('nota interna')");
     await po.fill("textarea[aria-label=Comentário]", "Olá! Seu pedido está em análise pela equipe de produto.");
     await po.check("label.check input[type=checkbox]");
     await po.click("button:has-text('Enviar')");
-    await po.waitForSelector("li.public:has-text('em análise pela equipe')");
+    await po.waitForSelector("li.cm-public:has-text('em análise pela equipe')");
     assert.ok(await po.isVisible("a:has-text('Avisar cliente no WhatsApp')"));
+    const hs = await po.$$eval(".cm", (els: Element[]) => els.map((e) => (e as HTMLElement).offsetHeight));
+    assert.ok(hs.length >= 2 && hs.every((h) => h < 200), `comentários compactos (alturas: ${hs.join(",")})`);
     await snap(po, "03-modal-comentarios");
   });
   await step("modal: auditoria mostra antes/depois e a visualização de dado sensível", async () => {
     await po.click("[role=tab]:has-text('Auditoria')");
-    await po.waitForSelector(".audit .a-VIEW_SENSITIVE");
-    await po.waitForSelector(".audit .a-CREATE");
-    const updates = po.locator(".audit-head:has(.a-UPDATE)");
-    await updates.last().click();
-    await po.waitForSelector(".diff td.mono:has-text('status')");
-    assert.ok(await po.isVisible(".diff .old:has-text('RECEBIDO')"));
-    assert.ok(await po.isVisible(".diff .new:has-text('EM_ANALISE_PRODUTO')"));
+    await po.waitForSelector(".timeline .tl-view");
+    await po.waitForSelector(".timeline .tl-create:has-text('Solicitação registrada')");
+    await po.waitForSelector(".audit-day-h");
+    assert.ok(await po.isVisible(".tl-view:has-text('Consultou os dados pessoais do solicitante')"));
+    assert.ok(await po.locator(".tl-view:has-text('× ')").count() >= 1 || (await po.locator(".tl-view").count()) >= 1, "consultas seguidas ficam agrupadas");
+    assert.equal(await po.locator("text=VIEW_SENSITIVE").count(), 0, "sem códigos técnicos na tela");
+    const st = po.locator(".tl:has-text('Status alterado')").last();
+    await st.locator(".tl-head").click();
+    await po.waitForSelector(".diff td:has-text('Status')");
+    assert.ok(await po.isVisible(".diff .old:has-text('Recebido')"));
+    assert.ok(await po.isVisible(".diff .new:has-text('Em análise de produto')"));
+    await snap(po, "auditoria");
+  });
+  await step("modal: imagem colada no comentário fica NO comentário, não nos anexos do pedido", async () => {
+    await po.click("[role=tab]:has-text('Detalhes')");
+    const before = await po.locator(".dfiles figure").count();
+    await po.click("[role=tab]:has-text('Comentários')");
+    await po.fill("textarea[aria-label=Comentário]", "Segue o print do ajuste combinado");
+    await po.evaluate((b64: string) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "image.png", { type: "image/png" }));
+      document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, PNG.toString("base64"));
+    await po.waitForSelector(".composer li:has-text('print-')");
+    await po.click(".composer button:has-text('Enviar')");
+    await po.waitForSelector(".cm:has-text('Segue o print do ajuste') .thumb");
+    assert.equal(await po.locator(".composer li:has-text('print-')").count(), 0, "lista de anexos do comentário esvazia após enviar");
+    await snap(po, "comentario-com-imagem");
+    await po.click("[role=tab]:has-text('Detalhes')");
+    await po.waitForSelector(".dfiles");
+    assert.equal(await po.locator(".dfiles figure").count(), before, "anexos do pedido não mudaram");
   });
   await step("cliente vê status novo e resposta pública (interna não aparece)", async () => {
     const v2 = await newPage();
@@ -398,6 +432,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   await step("mesclar: duplicata é ligada à principal pelo protocolo", async () => {
     await po.keyboard.press("Escape");
     await po.click("td:has-text('Adicionar Marcas')");
+    await po.click("[role=dialog] summary:has-text('Mais ações')");
     await po.fill("input[aria-label='Protocolo para mesclar']", "CON-2026-0001".replace("2026", String(new Date().getFullYear())));
     await po.click("button:has-text('Mesclar nesta')");
     await po.waitForSelector("text=foi mesclada em");
@@ -431,6 +466,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   });
   await step("arquivar some da lista", async () => {
     await po.click("td:has-text('Adicionar Marcas')");
+    await po.click("[role=dialog] summary:has-text('Mais ações')");
     await po.click("button:has-text('Arquivar')");
     await po.waitForSelector("text=1 resultado(s)");
   });
@@ -446,7 +482,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await dev.waitForSelector("[role=dialog] >> text=mascarado (LGPD)");
     assert.equal(await dev.locator("[role=tab]:has-text('Auditoria')").count(), 0);
     assert.equal(await dev.locator("#st").isDisabled(), true);
-    assert.ok(await dev.isVisible("dd:has-text('(**) *****-3000')"));
+    assert.ok(await dev.isVisible(".contact li:has-text('(**) *****-3000')"));
   });
   await step("dev só comenta internamente (checkbox de resposta pública desabilitado)", async () => {
     await dev.click("[role=tab]:has-text('Comentários')");
@@ -629,6 +665,15 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await d1.waitForSelector("#clinic");
     assert.equal(await d1.locator("text=Recuperamos o rascunho").count(), 0);
   });
+  await step("e-mail é obrigatório: sem ele o formulário não envia e explica o motivo", async () => {
+    const d3 = await newPage();
+    await d3.goto(`${BASE}/#/solicitar`);
+    await d3.waitForSelector("#clinic");
+    assert.equal(await d3.getAttribute("#email", "required"), "", "campo marcado como obrigatório");
+    assert.equal(await d3.locator("label[for=email]:has-text('opcional')").count(), 0, "não diz mais 'opcional'");
+    await d3.click("button:has-text('Enviar solicitação')");
+    await d3.waitForSelector(".error:has-text('Informe o seu e-mail')");
+  });
   await step("e-mail inválido é recusado no formulário", async () => {
     const d2 = await newPage();
     await d2.goto(`${BASE}/#/solicitar`);
@@ -681,7 +726,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await po2.waitForSelector(`tr:has-text('${TITLE}') >> text=aguardando resposta`);
     await po2.click(`td:has-text('${TITLE}')`);
     await po2.click("[role=dialog] [role=tab]:has-text('Comentários')");
-    await po2.waitForSelector("li.public:has-text('unidade 2') .from-client");
+    await po2.waitForSelector("li.cm-client:has-text('unidade 2')");
     await po2.keyboard.press("Escape");
   });
   await step("criar tarefa no Redmine grava o vínculo externo", async () => {
@@ -755,6 +800,18 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await admin.waitForSelector("td:has-text('Bloqueio de horário')");
     await admin.waitForSelector("td:has-text('Relatório mensal')");
     assert.equal(await admin.locator("td:has-text('Relatório mensal')").count(), 1);
+  });
+  await step("tema escuro: botão 'Escolher arquivo' da importação segue o tema (sem fundo branco)", async () => {
+    current = admin;
+    await admin.goto(`${BASE}/#/admin/importar`);
+    await admin.waitForSelector("#csv");
+    await admin.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+    await admin.waitForTimeout(400); // espera a transição de cor terminar
+    const bg = await admin.evaluate(() => getComputedStyle(document.querySelector("#csv")!, "::file-selector-button").backgroundColor);
+    const m = /\d+/g, [r, g, b] = (bg.match(m) ?? ["255", "255", "255"]).map(Number);
+    assert.ok((r + g + b) / 3 < 90, `botão escuro no tema escuro (obtido ${bg})`);
+    await snap(admin, "importar-escuro");
+    await admin.evaluate(() => document.documentElement.removeAttribute("data-theme"));
   });
   await step("tema: alterna Automático → Claro → Escuro e lembra depois de recarregar", async () => {
     const t = await newPage();

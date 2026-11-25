@@ -49,7 +49,7 @@ const json = (status: number, body: unknown) =>
 
 interface Mail { to: string[]; subject: string; html: string; text: string }
 
-function layout(heading: string, bodyHtml: string, button?: { url: string; text: string }): string {
+function layout(heading: string, bodyHtml: string, button?: { url: string; text: string }, formal = false): string {
   const btn = button
     ? `<p style="margin:24px 0"><a href="${esc(button.url)}" style="background:#4c1d95;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">${esc(button.text)}</a></p>
        <p style="color:#6b6880;font-size:13px">Se o botão não funcionar, copie este endereço no navegador:<br>${esc(button.url)}</p>`
@@ -61,8 +61,18 @@ function layout(heading: string, bodyHtml: string, button?: { url: string; text:
 <h1 style="font-size:20px;margin:0 0 12px">${esc(heading)}</h1>
 ${bodyHtml}${btn}
 </div>
-<p style="color:#6b6880;font-size:12px;margin-top:16px">Você recebeu esta mensagem porque há uma solicitação registrada na Conceive. Os dados são tratados conforme a LGPD.</p>
+${formal ? `<p style="margin:16px 0 0;font-size:14px">Atenciosamente,<br><strong>Equipe Conceive</strong></p>` : ""}
+<p style="color:#6b6880;font-size:12px;margin-top:16px">Esta é uma mensagem automática; não é necessário respondê-la. Você a recebeu porque este endereço de e-mail foi informado em uma solicitação registrada na Conceive. Os dados pessoais são tratados em conformidade com a Lei Geral de Proteção de Dados (LGPD).</p>
 </div></body></html>`;
+}
+
+/** Data e hora no fuso de Fortaleza, em português (ex.: 25/11/2026 às 00:25). */
+function fmtDateTime(v: unknown): string {
+  const d = new Date(String(v ?? ""));
+  if (isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Fortaleza", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(d);
+  const g = (t: string) => parts.find((x) => x.type === t)?.value ?? "";
+  return `${g("day")}/${g("month")}/${g("year")} às ${g("hour")}:${g("minute")}`;
 }
 
 const row = (k: string, v: string) => `<tr><td style="padding:4px 12px 4px 0;color:#6b6880">${esc(k)}</td><td style="padding:4px 0"><strong>${esc(v)}</strong></td></tr>`;
@@ -79,14 +89,21 @@ function buildMails(p: any, env: Env): Mail[] {
   switch (p.event) {
     case "request_created": {
       if (client.length && link) {
+        const nome = oneLine(p.requester_name, 120);
+        const greet = nome ? `Prezado(a) ${nome},` : "Prezado(a) cliente,";
+        const mod0 = label(MODULES, p.module), typ0 = label(TYPES, p.type), clin0 = oneLine(p.clinic_name || "—", 160);
+        const when = fmtDateTime(p.created_at);
         mails.push({
           to: client,
-          subject: `[${proto}] Recebemos a sua solicitação`,
-          html: layout("Recebemos a sua solicitação",
-            `<p>Seu protocolo é <strong style="font-size:18px">${esc(proto)}</strong>.</p>
-             <p><strong>Guarde este e-mail:</strong> o link abaixo é a única forma de acompanhar o andamento, pois não há login para clientes.</p>`,
-            { url: link, text: "Acompanhar solicitação" }),
-          text: `Recebemos a sua solicitação.\nProtocolo: ${proto}\n\nGuarde este e-mail: o link abaixo é a única forma de acompanhar o andamento.\n${link}\n`,
+          subject: `[${proto}] Confirmação de recebimento da sua solicitação`,
+          html: layout("Confirmação de recebimento",
+            `<p>${esc(greet)}</p>
+             <p>Confirmamos o recebimento da sua solicitação, registrada sob o protocolo <strong style="font-size:18px">${esc(proto)}</strong>. Nossa equipe fará a análise e retornará por este canal.</p>
+             <table style="border-collapse:collapse;margin:12px 0">${row("Protocolo", proto)}${row("Assunto", title)}${row("Clínica", clin0)}${row("Módulo", mod0)}${row("Tipo de demanda", typ0)}${when ? row("Registrada em", when) : ""}${row("Situação atual", "Recebido")}</table>
+             <p>Para consultar o andamento, enviar informações complementares ou avaliar o atendimento, utilize o botão abaixo.</p>
+             <p><strong>Guarde este e-mail:</strong> o link é pessoal e é a única forma de acompanhar a solicitação, pois não há login para clientes. Não o compartilhe com terceiros.</p>`,
+            { url: link, text: "Acompanhar solicitação" }, true),
+          text: `${greet}\n\nConfirmamos o recebimento da sua solicitação, registrada sob o protocolo ${proto}.\nNossa equipe fará a análise e retornará por este canal.\n\nAssunto: ${title}\nClínica: ${clin0}\nMódulo: ${mod0}\nTipo de demanda: ${typ0}\n${when ? `Registrada em: ${when}\n` : ""}Situação atual: Recebido\n\nGuarde este e-mail: o link abaixo é pessoal e é a única forma de acompanhar a solicitação. Não o compartilhe com terceiros.\n${link}\n\nAtenciosamente,\nEquipe Conceive\n`,
         });
       }
       if (team.length) {

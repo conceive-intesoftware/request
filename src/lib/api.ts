@@ -51,6 +51,7 @@ const FRIENDLY: [RegExp, string][] = [
   [/too_many_attachments/i, "No máximo 5 anexos."],
   [/invalid_attachment/i, "Anexo inválido. Envie o arquivo novamente."],
   [/invalid_comment/i, "Comentário vazio ou grande demais (máx. 4000)."],
+  [/email_required/i, "Informe o seu e-mail: é para ele que enviamos a confirmação e o link de acompanhamento."],
   [/invalid_email/i, "E-mail inválido. Confira o endereço digitado."],
   [/invalid_vote/i, "Você já enviou este pedido, então ele já conta como o seu apoio."],
   [/not_rateable/i, "A avaliação só fica disponível depois que a solicitação é concluída."],
@@ -198,8 +199,16 @@ export const setPriority = (
     p_effort: effort,
   });
 export const setTags = (id: string, tags: string[]) => rpc<null>("set_request_tags", { p_id: id, p_tags: tags });
-export const addComment = (requestId: string, body: string, internal: boolean) =>
-  rpc<string>("add_comment", { p_request_id: requestId, p_body: body, p_internal: internal });
+/** Comentário da equipe, com imagens/arquivos opcionais (ficam dentro do comentário, não na solicitação). */
+export async function addComment(requestId: string, body: string, internal: boolean, files: UploadableFile[] = [], onProgress?: (done: number, total: number) => void): Promise<string> {
+  let paths: string[] = [];
+  if (files.length > 0) {
+    const { data: s } = await client().auth.getSession();
+    if (!s.session) throw new ApiError("Sua sessão expirou. Entre novamente.");
+    paths = await uploadFiles(s.session.user.id, files, onProgress);
+  }
+  return rpc<string>("add_comment", { p_request_id: requestId, p_body: body, p_internal: internal, p_attachment_paths: paths });
+}
 export const archiveRequest = (id: string) => rpc<null>("archive_request", { p_id: id });
 export const mergeRequest = (id: string, into: string) => rpc<null>("merge_request", { p_id: id, p_into: into });
 export const unmergeRequest = (id: string) => rpc<null>("unmerge_request", { p_id: id });

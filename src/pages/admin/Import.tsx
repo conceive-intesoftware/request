@@ -1,3 +1,4 @@
+import { Icon } from "../../components/Icon";
 import { useMemo, useState } from "react";
 import { importRequests } from "../../lib/api";
 import { FIELDS, FIELD_LABEL, REQUIRED, buildRows, detectColumns, parseCsv, type BuildResult, type Field } from "../../lib/importer";
@@ -73,7 +74,8 @@ export default function ImportPage() {
       </header>
 
       <section className="card">
-        <label className="label" htmlFor="csv">Arquivo CSV</label>
+        <label className="label" htmlFor="csv"><Icon name="upload" size={16} className="h-ic" />Arquivo CSV</label>
+        <p className="hint">Exporte a planilha pelo menu Arquivo → Fazer download → Valores separados por vírgula (.csv).</p>
         <input id="csv" type="file" accept=".csv,text/csv" onChange={(e) => void onFile(e.target.files?.[0])} />
         {fileName && <p className="hint">{fileName} · {Math.max(0, (table?.length ?? 1) - 1)} linhas de dados</p>}
       </section>

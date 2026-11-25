@@ -149,6 +149,10 @@ create table if not exists public.request_comments (
 );
 create index if not exists request_comments_req_idx on public.request_comments (request_id, created_at);
 
+-- Anexo de comentário: a imagem fica no comentário que a enviou (e não nos anexos da solicitação).
+alter table public.request_attachments add column if not exists comment_id uuid references public.request_comments(id);
+create index if not exists request_attachments_comment_idx on public.request_attachments (comment_id);
+
 create table if not exists public.tags (
   id    uuid primary key default gen_random_uuid(),
   name  text not null unique check (length(name) between 1 and 40)
@@ -492,7 +496,8 @@ begin
       v := jsonb_build_object('event', 'request_created', 'protocol', new.protocol, 'title', new.title,
              'module', new.module, 'type', new.type,
              'clinic_name', coalesce((select c.name from public.clinics c where c.id = new.clinic_id), new.pending_clinic_name),
-             'client_email', new.requester_email, 'tracking_token', new.tracking_token);
+             'client_email', new.requester_email, 'tracking_token', new.tracking_token,
+             'requester_name', new.requester_name, 'created_at', new.created_at);
     elsif new.status is distinct from old.status and new.status <> 'ARQUIVADO' and new.requester_email is not null then
       v := jsonb_build_object('event', 'status_changed', 'protocol', new.protocol, 'title', new.title,
              'status', new.status, 'previous_status', old.status,
@@ -641,7 +646,8 @@ begin
   v_phone := private.normalize_br_phone(p_whatsapp);
   if v_phone is null then raise exception 'invalid_phone'; end if;
   v_email := nullif(lower(trim(coalesce(p_requester_email, ''))), '');
-  if v_email is not null and (length(v_email) > 160 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then raise exception 'invalid_email'; end if;
+  if v_email is null then raise exception 'email_required'; end if;
+  if (length(v_email) > 160 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then raise exception 'invalid_email'; end if;
 
   if v_clinic is not null then
     if not exists (select 1 from public.clinics c where c.id = v_clinic and c.active) then
@@ -918,9 +924,12 @@ begin
     'attachments', (select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'file_name', a.file_name,
                         'mime_type', a.mime_type, 'size_bytes', a.size_bytes, 'storage_path', a.storage_path)
                         order by a.created_at), '[]'::jsonb)
-                    from public.request_attachments a where a.request_id = r.id),
+                    from public.request_attachments a where a.request_id = r.id and a.comment_id is null),
     'comments', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'body', c.body, 'is_internal', c.is_internal,
-                        'created_at', c.created_at, 'author_name', p.name, 'author_role', p.role, 'author_kind', c.author_kind)
+                        'created_at', c.created_at, 'author_name', p.name, 'author_role', p.role, 'author_kind', c.author_kind,
+                        'attachments', (select coalesce(jsonb_agg(jsonb_build_object('id', ca.id, 'file_name', ca.file_name,
+                            'mime_type', ca.mime_type, 'size_bytes', ca.size_bytes, 'storage_path', ca.storage_path)
+                            order by ca.created_at), '[]'::jsonb) from public.request_attachments ca where ca.comment_id = c.id))
                         order by c.created_at), '[]'::jsonb)
                  from public.request_comments c left join public.profiles p on p.id = c.author_id
                  where c.request_id = r.id),
@@ -974,16 +983,30 @@ begin
   end loop;
 end $$;
 
-create or replace function public.add_comment(p_request_id uuid, p_body text, p_internal boolean)
+drop function if exists public.add_comment(uuid, text, boolean);
+create or replace function public.add_comment(p_request_id uuid, p_body text, p_internal boolean, p_attachment_paths text[] default '{}')
 returns uuid language plpgsql security definer set search_path = '' as $$
-declare v_id uuid;
+declare v_id uuid; v_uid uuid := (select auth.uid()); v_path text; v_obj record;
 begin
   perform private.require(case when coalesce(p_internal, true) then 'comment:internal' else 'comment:public' end);
   if length(trim(coalesce(p_body, ''))) not between 1 and 4000 then raise exception 'invalid_comment'; end if;
   if not exists (select 1 from public.requests where id = p_request_id and deleted_at is null) then raise exception 'not_found'; end if;
+  if coalesce(array_length(p_attachment_paths, 1), 0) > 5 then raise exception 'too_many_attachments'; end if;
   insert into public.request_comments (request_id, author_id, body, is_internal)
-  values (p_request_id, (select auth.uid()), trim(p_body), coalesce(p_internal, true))
+  values (p_request_id, v_uid, trim(p_body), coalesce(p_internal, true))
   returning id into v_id;
+
+  foreach v_path in array coalesce(p_attachment_paths, '{}') loop
+    if v_path not like v_uid::text || '/%' then raise exception 'invalid_attachment'; end if;
+    if exists (select 1 from public.request_attachments a where a.storage_path = v_path) then raise exception 'invalid_attachment'; end if;
+    select o.name, o.metadata into v_obj from storage.objects o where o.bucket_id = 'attachments' and o.name = v_path;
+    if not found then raise exception 'invalid_attachment'; end if;
+    insert into public.request_attachments (request_id, comment_id, file_name, mime_type, size_bytes, storage_path)
+    values (p_request_id, v_id,
+            left(case when position('__' in v_path) > 0 then substr(v_path, position('__' in v_path) + 2) else v_path end, 120),
+            coalesce(v_obj.metadata ->> 'mimetype', 'application/octet-stream'),
+            coalesce((v_obj.metadata ->> 'size')::bigint, 0), v_path);
+  end loop;
   return v_id;
 end $$;
 
@@ -1167,8 +1190,8 @@ begin
     if exists (select 1 from public.request_attachments a where a.storage_path = v_path) then raise exception 'invalid_attachment'; end if;
     select o.name, o.metadata into v_obj from storage.objects o where o.bucket_id = 'attachments' and o.name = v_path;
     if not found then raise exception 'invalid_attachment'; end if;
-    insert into public.request_attachments (request_id, file_name, mime_type, size_bytes, storage_path)
-    values (r.id,
+    insert into public.request_attachments (request_id, comment_id, file_name, mime_type, size_bytes, storage_path)
+    values (r.id, v_id,
             left(case when position('__' in v_path) > 0 then substr(v_path, position('__' in v_path) + 2) else v_path end, 120),
             coalesce(v_obj.metadata ->> 'mimetype', 'application/octet-stream'),
             coalesce((v_obj.metadata ->> 'size')::bigint, 0), v_path);
@@ -1534,7 +1557,7 @@ grant execute on function
   public.set_request_status(uuid, public.request_status),
   public.set_request_priority(uuid, public.priority_level, int, numeric, numeric, numeric),
   public.set_request_tags(uuid, text[]),
-  public.add_comment(uuid, text, boolean),
+  public.add_comment(uuid, text, boolean, text[]),
   public.archive_request(uuid),
   public.merge_request(uuid, uuid),
   public.unmerge_request(uuid),

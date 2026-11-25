@@ -41,7 +41,7 @@ const KEY = "re_CHAVE_SECRETA_XYZ";
 const ENV = { WEBHOOK_SECRET: SECRET, RESEND_API_KEY: KEY, MAIL_FROM: "Conceive <oi@exemplo.com.br>", SITE_URL: "https://user.github.io/conceive-requests/", TEAM_EMAILS: "po@x.com, dev@x.com" };
 const post = (body: unknown, headers: Record<string, string> = { "x-webhook-secret": SECRET }) =>
   new Request("https://f.test/notify", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
-const created = { event: "request_created", protocol: "CON-2026-0001", title: "Pagamento antecipado", module: "FINANCEIRO", type: "MELHORIA_FLUXO", clinic_name: "Kardiomov", client_email: "sarah@clinica.com", tracking_token: TOKEN };
+const created = { event: "request_created", protocol: "CON-2026-0001", title: "Pagamento antecipado", module: "FINANCEIRO", type: "MELHORIA_FLUXO", clinic_name: "Kardiomov", client_email: "sarah@clinica.com", tracking_token: TOKEN, requester_name: "Sarah Silva", created_at: "2026-11-25T03:25:00Z" };
 const sentBodies = (calls: Call[]) => calls.map((c) => JSON.parse(c.init.body));
 
 console.log("notify");
@@ -83,11 +83,18 @@ await test("request_created: confirmação ao cliente (com link) + aviso à equi
   const link = `https://user.github.io/conceive-requests/#/acompanhar/${TOKEN}`;
   assert.ok(cli.html.includes(link) && cli.text.includes(link));
   assert.match(cli.html, /Guarde este e-mail/);
+  assert.match(cli.subject, /Confirmação de recebimento/);
+  assert.match(cli.html, /Prezado\(a\) Sarah Silva,/);
+  assert.match(cli.html, /Atenciosamente,/);
+  assert.ok(cli.html.includes("25/11/2026 às 00:25"), "data no fuso de Fortaleza");
+  assert.ok(cli.html.includes("Pagamento antecipado") && cli.html.includes("Kardiomov") && cli.html.includes("Recebido"));
+  assert.match(cli.text, /Prezado\(a\) Sarah Silva,[\s\S]*Atenciosamente,\nEquipe Conceive/);
   assert.deepEqual(team.to, ["po@x.com", "dev@x.com"]);
   assert.match(team.subject, /CON-2026-0001/);
   assert.ok(team.html.includes("Financeiro") && team.html.includes("Melhoria de fluxo") && team.html.includes("Kardiomov"));
   assert.ok(!team.html.includes(TOKEN) && !team.text.includes(TOKEN), "a equipe não recebe o token do cliente");
   assert.ok(!JSON.stringify(team).includes("sarah@clinica.com"), "a equipe não recebe o e-mail do cliente");
+  assert.ok(!JSON.stringify(team).includes("Sarah Silva"), "o aviso da equipe não traz o nome do cliente");
 });
 await test("link de acompanhamento correto com e sem barra final em SITE_URL", async () => {
   for (const site of ["https://user.github.io/conceive-requests", "https://user.github.io/conceive-requests/", "https://user.github.io/conceive-requests//"]) {

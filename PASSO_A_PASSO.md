@@ -113,7 +113,7 @@ Se o fluxo falhar com “Falta a variável VITE_SUPABASE_URL”, volte ao passo 
 ## Parte 3 — Primeiro acesso e teste
 
 1. **Site:** `https://SEUUSUARIO.github.io/conceive-requests/`. Tem três abas no topo: **Solicitação de funcionalidade** (abre direto, é o link que você passa para as clínicas), **Acompanhar sua solicitação** e **Acesso da equipe**.
-2. Envie uma solicitação de teste. Nos anexos dá para **escolher arquivos, arrastar, ou colar um print com Ctrl + V** (por exemplo, depois de `Win + Shift + S`); cada arquivo pode ter até 50 MB: o protocolo `CON-AAAA-0001` aparece com o link de acompanhamento.
+2. Envie uma solicitação de teste (informe um e-mail seu: ele é obrigatório). Nos anexos dá para **escolher arquivos, arrastar, ou colar um print com Ctrl + V** (por exemplo, depois de `Win + Shift + S`); cada arquivo pode ter até 50 MB: o protocolo `CON-AAAA-0001` aparece com o link de acompanhamento.
 3. **Painel da equipe:** clique na aba **Acesso da equipe** (ou adicione `#/login` ao endereço).
    - Entre com o e-mail e a senha do passo 1.5.
    - No **primeiro acesso** aparece um QR code: leia com Google Authenticator, Authy ou 1Password e digite o código de 6 dígitos. Nos próximos acessos basta o código.
@@ -141,6 +141,8 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 > **Se você já tinha a versão 1 no ar:** rode de novo o arquivo `supabase/Supabase-completo.sql` inteiro no SQL Editor (ele é seguro para repetir e não apaga dados) e publique o site novamente.
 
 ### 5.1 E-mails automáticos (Resend + função `notify`)
+> **O e-mail agora é obrigatório no formulário.** É para ele que vai a *confirmação de recebimento* (mensagem formal, com protocolo, resumo do pedido e o link de acompanhamento). Por isso, configure esta etapa antes de divulgar o formulário: sem ela o cliente não recebe o link por e-mail (ele continua aparecendo na tela de confirmação).
+
 1. Crie conta em resend.com, **verifique o seu domínio** (Domains) e crie uma **API key**.
 2. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `notify`, cole o conteúdo de `supabase/functions/notify/index.ts`. **Desligue "Enforce JWT verification"** (o banco chama a função sem login; quem protege é o segredo).
 3. Em **Edge Functions → Secrets**, cadastre: `WEBHOOK_SECRET` (frase longa e aleatória), `RESEND_API_KEY`, `MAIL_FROM` (ex.: `Conceive <contato@seudominio.com.br>`), `TEAM_EMAILS` (e-mails da equipe, separados por vírgula) e `SITE_URL` (endereço do site no GitHub Pages).
@@ -219,11 +221,11 @@ Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas 
 
 Testado neste ambiente, **contra um PostgreSQL 16 real**, simulando o Supabase (papéis `anon`/`authenticated`, claims do JWT e schemas `auth`/`storage`):
 
-- **358 verificações no banco** (mais a Parte B ligada: admin, clínicas, e-mails e limpeza de anônimos): permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração; e na versão 2: votos, roadmap público, respostas do cliente, CSAT, métricas, importação e o envio do webhook de e-mail (com um `pg_net` simulado).
-- **39 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
+- **368 verificações no banco** (mais a Parte B ligada: admin, clínicas, e-mails e limpeza de anônimos): permissões de cada papel, RLS, mascaramento LGPD, auditoria (antes/depois, IP, autor), imutabilidade da trilha, bloqueio de DELETE, protocolo sequencial, rate limit, limites de anexos, mesclagem, RICE, exportação, MFA obrigatório (aal2) e idempotência da migração; e na versão 2: votos, roadmap público, respostas do cliente, CSAT, métricas, importação e o envio do webhook de e-mail (com um `pg_net` simulado).
+- **40 testes de contrato**: o `src/lib/api.ts` do site rodando contra esse banco, em cada papel.
 - **40 testes das Edge Functions** (e-mail, tarefas Redmine/Pipefy e criação de usuários) com um `fetch` simulado.
-- **31 testes unitários**: rascunho, importação de CSV, tema, telefone, validação, CSV seguro, anexos (limite de 50 MB exato, nome do print colado) e comparação automática dos enums e DDDs do site com os do SQL.
-- **59 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe; mais rascunho após recarregar, roadmap e votos, resposta do cliente, tarefa externa, avaliação, métricas, importação de CSV, tema e CSP sem violações.
+- **33 testes unitários**: rascunho, importação de CSV, tema, telefone, validação, CSV seguro, anexos (limite de 50 MB exato, nome do print colado) e comparação automática dos enums e DDDs do site com os do SQL.
+- **62 verificações de ponta a ponta em navegador real (Chromium)**: abas do site, colar print (Ctrl + V), arrastar arquivo, recusa acima de 50 MB, cliente envia e acompanha, PO/Dev/Admin entram com MFA, lista, filtros, modal, comentários, Kanban com arrastar, mesclagem, CSV, arquivar e gestão de clínicas/equipe; mais rascunho após recarregar, roadmap e votos, resposta do cliente, tarefa externa, avaliação, métricas, importação de CSV, tema e CSP sem violações.
 
 **Não foi possível testar aqui** (exige internet e as suas contas):
 - O `npm install` + `vite build` reais (o ambiente não tinha rede): validei a compilação com esbuild e os tipos com declarações simplificadas. O primeiro *build* no GitHub é o teste final; se acusar algum erro de tipo, ele aparece no log da aba Actions.

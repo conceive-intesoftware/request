@@ -69,6 +69,7 @@ const base = {
   unitId: ID.unitK,
   pendingClinicName: null,
   requesterName: "Sarah Silva",
+  email: "sarah@clinica.com",
   requesterRole: "ADMINISTRADOR",
   whatsapp: "(84) 99849-3000",
   module: "FINANCEIRO",
@@ -501,6 +502,20 @@ const base = {
     await rejects(api.deleteUnit(ID.unitK), /em uso|solicita/i);
     const u = await api.addUnit(ID.clinicK, "Temporária");
     await api.deleteUnit(u);
+  });
+  await step("e-mail obrigatório no envio; comentário da equipe com imagem fica no comentário", async () => {
+    visitor();
+    await api.ensureSession("turnstile-ok");
+    await rejects(api.submitRequest({ ...base, title: "Pedido sem e-mail algum", email: "" }), /Informe o seu e-mail/);
+    as("po");
+    const cid = await api.addComment(id2, "Segue o print do ajuste", true, [{ name: "print ajuste.png", type: "image/png", size: 2048 }]);
+    assert.ok(cid);
+    const d = (await api.getRequestDetail(id2))!;
+    const c = d.comments.find((x) => x.id === cid)!;
+    assert.equal(c.attachments.length, 1);
+    assert.equal(c.attachments[0].file_name, "print_ajuste.png");
+    assert.ok(!d.attachments.some((a) => a.file_name === "print_ajuste.png"), "não entra nos anexos da solicitação");
+    await rejects(api.addComment(id2, "texto", true, Array.from({ length: 6 }, (_, i) => ({ name: `a${i}.png`, type: "image/png", size: 10 }))), /5 anexos/);
   });
   await step("tarefa externa: sem funções disponíveis, a mensagem é amigável", async () => {
     as("po");
