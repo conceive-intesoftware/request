@@ -710,6 +710,20 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await voter.waitForSelector("p.votes[aria-label='1 apoio']");
     await snap(voter, "04-roadmap");
   });
+  await step("formulário sugere o pedido parecido já publicado no roadmap (e dá para dispensar)", async () => {
+    await voter.goto(`${BASE}/#/solicitar`);
+    await voter.waitForSelector("#title");
+    await voter.fill("#title", TITLE);
+    await voter.waitForSelector(".similar", { timeout: 8000 });
+    assert.ok((await voter.textContent(".similar"))!.includes(TITLE), "mostra o título do pedido parecido");
+    const html = await voter.content();
+    assert.ok(!html.includes("Sarah") && !html.includes("99849"), "sugestão não vaza dados pessoais");
+    await voter.click(".similar button:has-text('Não é o mesmo pedido')");
+    await voter.waitForSelector(".similar", { state: "detached" });
+    await voter.fill("#title", "Assunto bem diferente sobre vacinas");
+    await voter.waitForTimeout(1200);
+    assert.equal(await voter.locator(".similar").count(), 0, "assunto diferente não sugere nada");
+  });
   await step("o autor não consegue apoiar a própria solicitação", async () => {
     await visitor.goto(`${BASE}/#/comunidade`);
     await visitor.waitForSelector(`h2:has-text('${TITLE}')`);
@@ -799,7 +813,8 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await admin.click("nav a:has-text('Solicitações')");
     await admin.waitForSelector("td:has-text('Bloqueio de horário')");
     await admin.waitForSelector("td:has-text('Relatório mensal')");
-    assert.equal(await admin.locator("td:has-text('Relatório mensal')").count(), 1);
+    // a lista pode recarregar logo após aparecer: espera estabilizar com exatamente 1 linha (sem duplicar)
+    await admin.waitForFunction(() => Array.from(document.querySelectorAll("td")).filter((td) => /Relatório mensal/.test(td.textContent ?? "")).length === 1);
   });
   await step("tema escuro: botão 'Escolher arquivo' da importação segue o tema (sem fundo branco)", async () => {
     current = admin;

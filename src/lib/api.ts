@@ -6,6 +6,7 @@ import type {
   ImportResult,
   NotifyLogRow,
   NotifyStatus,
+  SimilarRequest,
   ImportRow,
   Metrics,
   PublicList,
@@ -173,6 +174,9 @@ export const rateRequest = (token: string, score: number, comment: string | null
 // roadmap público e votos
 export const listPublicRequests = (search: string, module: string, page: number) =>
   rpc<PublicList>("list_public_requests", { p_search: search.trim() || null, p_module: module || null, p_page: page });
+/** Pedidos já publicados no roadmap parecidos com o que está sendo digitado (não precisa de sessão). */
+export const findSimilarRequests = (title: string, description: string) =>
+  rpc<SimilarRequest[]>("find_similar_requests", { p_title: title, p_description: description || null });
 export const voteRequest = (id: string) => rpc<number>("vote_request", { p_request_id: id });
 export const unvoteRequest = (id: string) => rpc<number>("unvote_request", { p_request_id: id });
 
@@ -250,6 +254,8 @@ export async function signedAttachmentUrl(path: string): Promise<string> {
 
 // ───────── administração ─────────
 export const adminNotifyLog = (limit = 50) => rpc<NotifyLogRow[]>("admin_notify_log", { p_limit: limit });
+/** Pede a leitura do status das tarefas no Redmine/Pipefy agora (o resultado chega em alguns segundos). */
+export const adminSyncExternalNow = () => rpc<{ queued: boolean }>("admin_sync_external_now");
 export const adminNotifyStatus = () => rpc<NotifyStatus>("admin_notify_status");
 /** Envia um e-mail de teste (ao próprio Admin, ou a `to`) pela mesma rota dos e-mails reais. */
 export const adminSendTestEmail = (to?: string) => rpc<{ to: string }>("admin_send_test_email", { p_to: to ?? null });

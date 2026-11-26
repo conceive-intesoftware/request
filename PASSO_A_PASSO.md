@@ -207,12 +207,30 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 
 **Conferindo se os e-mails saem:** no painel, **Equipe → E-mails automáticos** mostra os últimos 30 envios, se deram certo e o motivo provável quando falham (por exemplo, HTTP 401 = segredo diferente entre o banco e a função).
 
+### 5.2a Status do Redmine/Pipefy voltando ao Conceive (função `external-sync`)
+Depois que a tarefa foi criada (5.2), o Conceive passa a **ler** o andamento dela e atualiza a etapa da solicitação (o cliente recebe o e-mail de mudança de etapa e a auditoria registra, sem autor, que veio do sistema externo).
+
+**Pré-requisitos:** e-mails ligados (5.1: o banco já guarda o endereço e o segredo), a função `external-task` configurada (5.2) e solicitações com tarefa vinculada.
+
+1. **Publicar a função:** *Edge Functions → Deploy a new function → Via Editor*, nome exato `external-sync`, cole `supabase/functions/external-sync/index.ts`, *Deploy*, e **desligue “Enforce JWT verification”** (quem chama é o banco; a proteção é o segredo).
+2. **Secrets:** nenhum novo. Ela usa o `WEBHOOK_SECRET` da `notify`, `REDMINE_URL`/`REDMINE_API_KEY` e/ou `PIPEFY_TOKEN` da `external-task`; `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` o Supabase injeta sozinho (não os coloque no site nem no GitHub).
+3. **Agendar a leitura (a cada 10 minutos):** na Parte B do `Supabase-completo.sql`, `v_cron_externo := true` e rode o arquivo inteiro (precisa de `pg_cron`). Para ler na hora, use o botão **Sincronizar status agora** no detalhe da solicitação (aparece quando há tarefa vinculada).
+4. **Regras (para ninguém se surpreender):**
+   - A **primeira leitura só registra** o status atual; a etapa só muda quando o status externo **muda** depois disso. Assim uma decisão manual do PO não é desfeita a cada leitura.
+   - Só muda se o status/fase tiver uma linha em `private.external_status_map` (nome em **minúsculas e sem acento**). Padrões: Redmine `new`/`nova` → Aprovado para roadmap, `in progress`/`em andamento` → Em desenvolvimento, `resolved`/`closed`/`fechada`/`concluida` → Concluído; Pipefy (nome da **fase**) `backlog`/`a fazer` → Aprovado, `em desenvolvimento`/`doing` → Em desenvolvimento, `concluido`/`finalizado`/`done`/`publicado` → Concluído.
+   - Para as **suas** fases/status, adicione linhas no SQL Editor:
+     `insert into private.external_status_map (system, external_status, status) values ('PIPEFY', 'em teste', 'EM_DESENVOLVIMENTO') on conflict (system, external_status) do update set status = excluded.status;`
+   - Status sem linha na tabela não mudam nada; a resposta da função lista os que ficaram sem mapeamento (*Edge Functions → external-sync → Logs*).
+   - Solicitações **concluídas ou arquivadas** saem da fila, e uma arquivada nunca é reaberta pelo sistema externo.
+
 ### 5.2b Alerta de solicitações paradas (SLA)
 Não precisa configurar nada: o painel já marca em vermelho **sem resposta** (Recebido há mais de 3 dias sem resposta da equipe, ou cliente respondeu e a equipe não voltou) e **parada** (Em análise ou Em desenvolvimento sem movimentação há mais de 15 dias). Use o filtro **Atraso** na lista; a tela **Métricas** mostra o total. Pedidos concluídos, arquivados, mesclados ou importados da planilha antiga não entram na conta.
 - **Resumo diário por e-mail (opcional):** troque `v_cron_sla := true` na Parte B do `Supabase-completo.sql` (precisa de `pg_cron` e dos e-mails já configurados). Para mudar os prazos, veja o comentário no topo do arquivo.
 - Os prazos contam dias corridos, não dias úteis.
 
 ### 5.3 Roadmap público e votos
+No formulário, enquanto a pessoa digita o título, o site sugere **pedidos parecidos já publicados no roadmap** (título, etapa e número de apoios; nada de dados pessoais) e incentiva apoiar em vez de enviar outro. Só entram na sugestão os pedidos **publicados**; por isso, publicar os pedidos mais comuns reduz duplicidade. A pessoa pode dispensar a sugestão e continuar.
+
 No detalhe de uma solicitação, marque **Mostrar no roadmap público** (Admin e PO). Só o título e a descrição ficam visíveis, sem nome nem contato. **Confira se não há dados de pacientes antes de publicar.**
 
 ### 5.4 Importar a planilha antiga
@@ -261,6 +279,8 @@ Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas 
 | Painel diz “Autenticação em dois fatores pendente” | Saia e entre de novo, concluindo o código do autenticador. |
 | Vídeo/imagem grande recusado | O limite é 50 MB por arquivo e 5 por solicitação. Se ainda falhar com menos de 50 MB, veja o limite global em Storage → Settings. |
 | Ctrl + V não cola o print | Clique em qualquer área da página (fora de uma caixa de texto) e tente de novo, ou use o botão **Colar imagem**. Só imagens PNG/JPG/WEBP são aceitas. |
+| Sugestão de pedidos parecidos não aparece | Só aparecem pedidos publicados no roadmap, e o título precisa ter 8+ caracteres com ao menos 2 palavras relevantes em comum. Rode o `Supabase-completo.sql` inteiro se o erro “Could not find the function find_similar_requests” aparecer. |
+| Status do Redmine/Pipefy não muda a etapa | Veja 5.2a: a 1ª leitura só registra; o status externo precisa ter linha em `private.external_status_map`; confira a função `external-sync` (JWT desligado) e o agendamento (`v_cron_externo`). |
 | Erro “Could not find the function …” | Rode `notify pgrst, 'reload schema';` no SQL Editor. |
 | Tela em branco em endereço antigo | Abra a raiz do site; o site usa endereços com `#/` e funciona em qualquer subcaminho. |
 
@@ -286,7 +306,7 @@ Testado neste ambiente, **contra um PostgreSQL 16 real**, simulando o Supabase (
 
 ## Limites conhecidos
 - O IP na auditoria vem dos cabeçalhos da requisição (`cf-connecting-ip` / `x-forwarded-for`) e é **informativo**, não prova forense.
-- Redmine/Pipefy: a tarefa é criada pelo painel e o ID é guardado, mas o status **não volta** automaticamente para o Conceive.
+- Redmine/Pipefy: o status volta ao Conceive só se a leitura estiver agendada (5.2a) e mapeada; a primeira leitura apenas registra.
 - Sem e-mail configurado (Parte 5), o recurso simplesmente não envia nada; o resto funciona igual.
 - A CSP é aplicada por `<meta>` (o GitHub Pages não permite cabeçalhos HTTP); `frame-ancestors` não funciona assim, por isso há também um bloqueio por script contra iframe.
 - O aviso ao cliente é um link `wa.me` (abre o WhatsApp com a mensagem pronta); não é a API oficial.

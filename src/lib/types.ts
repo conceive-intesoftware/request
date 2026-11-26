@@ -145,6 +145,16 @@ export interface NotifyLogRow {
   http_body: string | null;
 }
 
+export interface SimilarRequest {
+  id: string;
+  protocol: string;
+  title: string;
+  status: string;
+  module: string;
+  votes: number;
+  excerpt: string;
+}
+
 export interface NotifyStatus {
   pg_net: boolean;
   url_set: boolean;

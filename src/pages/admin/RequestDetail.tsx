@@ -234,6 +234,14 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
                 <input className="input" placeholder="ID da tarefa" value={ext.id} maxLength={80} onChange={(e) => setExt({ ...ext, id: e.target.value })} aria-label="ID externo" />
                 <button className="btn" disabled={busy}><Icon name="save" size={15} /> Salvar vínculo</button>
               </form>
+              {d.external_id && (
+                <div className="row">
+                  <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void run(async () => {
+                    await api.adminSyncExternalNow();
+                    alert("Leitura pedida. Em alguns segundos o status da tarefa é consultado e, se mudou, a etapa desta solicitação é atualizada (atualize a página para ver).");
+                  })}><Icon name="refresh" size={14} /> Sincronizar status agora</button>
+                </div>
+              )}
               {!d.external_id && (
                 <div className="row">
                   {(["REDMINE", "PIPEFY"] as const).map((sys) => (

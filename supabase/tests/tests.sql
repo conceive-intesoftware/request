@@ -762,6 +762,97 @@ begin
   delete from private.app_settings where key in ('notify_url', 'notify_secret');
 end $t$;
 
+-- ───────── 24d. pedidos parecidos e sincronização de status externo ─────────
+do $t$
+declare r1 record; r2 record; r3 record; j jsonb; n int; v_cnt int;
+begin
+  select * into r1 from tests.mk('Relatório financeiro mensal por convênio exportar planilha', null, 'Clínica Sim');
+  select * into r2 from tests.mk('Relatório financeiro semanal por convênio nas planilhas', null, 'Clínica Sim');
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform public.set_request_public(r1.id, true);
+  perform tests.logout();
+
+  -- pedidos parecidos: anon enxerga só o publicado, sem dados pessoais
+  perform tests.as_anon_role();
+  j := public.find_similar_requests('Exportar relatório financeiro por convênio', null);
+  perform tests.logout();
+  perform tests.ok(jsonb_array_length(j) = 1 and j -> 0 ->> 'id' = r1.id::text, 'parecidos: acha o pedido publicado e NÃO o privado');
+  perform tests.ok(j::text !~ 'Maria Teste' and j::text !~ '84986109779' and j::text !~ 'exemplo.com', 'parecidos: sem dados pessoais');
+  perform tests.as_anon_role();
+  perform tests.ok(public.find_similar_requests('curto', null) = '[]'::jsonb, 'parecidos: título curto não busca');
+  perform tests.ok(public.find_similar_requests('Algo totalmente diferente sobre estoque de vacinas', null) = '[]'::jsonb, 'parecidos: assunto diferente não casa');
+  perform tests.ok(public.find_similar_requests('para como esta isso sistema', null) = '[]'::jsonb, 'parecidos: só palavras comuns não casam');
+  perform tests.logout();
+
+  -- sincronização: só o service_role chama
+  perform tests.fails($$set local role anon; select public.external_sync_pending()$$, 'permission denied', 'anon não lê a fila de sincronização');
+  perform tests.logout();
+  perform tests.login(gen_random_uuid(), 'aal2');
+  perform tests.fails($$select public.external_apply_status(gen_random_uuid(), 'x')$$, 'permission denied', 'usuário logado não aplica status externo');
+  perform tests.logout();
+
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform public.set_external_ref(r2.id, 'REDMINE', '4242');
+  perform tests.logout();
+
+  execute 'set local role service_role';
+  j := public.external_sync_pending();
+  perform tests.ok(exists (select 1 from jsonb_array_elements(j) e where e ->> 'id' = r2.id::text and e ->> 'system' = 'REDMINE' and e ->> 'external_id' = '4242'), 'fila: traz a solicitação vinculada');
+  perform tests.ok(not exists (select 1 from jsonb_array_elements(j) e where e ->> 'id' = r1.id::text), 'fila: ignora a que não tem vínculo');
+  perform tests.ok(public.external_apply_status(r2.id, 'New') ->> 'result' = 'baseline', 'primeira leitura só registra (não muda a etapa)');
+  perform tests.ok(public.external_apply_status(r2.id, 'new') ->> 'result' = 'unchanged', 'mesmo status externo: nada muda');
+  execute 'reset role';
+  perform tests.ok((select status from public.requests where id = r2.id) = 'RECEBIDO', 'etapa continua RECEBIDO após baseline');
+
+  select count(*) into n from net.calls;
+  execute 'set local role service_role';
+  j := public.external_apply_status(r2.id, 'In Progress');
+  execute 'reset role';
+  perform tests.ok(j ->> 'result' = 'updated' and j ->> 'to' = 'EM_DESENVOLVIMENTO', 'mudança para "In Progress" leva a EM_DESENVOLVIMENTO');
+  perform tests.ok((select status from public.requests where id = r2.id) = 'EM_DESENVOLVIMENTO', 'etapa gravada');
+  perform tests.ok((select count(*) from public.audit_logs where entity = 'requests' and entity_id = r2.id::text and action = 'UPDATE' and user_id is null and new_value ->> 'status' = 'EM_DESENVOLVIMENTO') = 1, 'auditoria registra a mudança (sem autor: foi o sistema externo)');
+
+  -- acentos e caixa são ignorados; status sem mapeamento não muda nada
+  execute 'set local role service_role';
+  perform tests.ok(public.external_apply_status(r2.id, 'Concluída') ->> 'result' = 'updated', 'acento/caixa: "Concluída" → CONCLUIDO');
+  perform tests.ok(public.external_apply_status(r2.id, 'Em revisão estranha') ->> 'result' = 'unmapped', 'status sem mapeamento é só informado');
+  execute 'reset role';
+  perform tests.ok((select status from public.requests where id = r2.id) = 'CONCLUIDO', 'unmapped não altera a etapa');
+
+  -- concluída sai da fila; arquivada não é reaberta
+  execute 'set local role service_role';
+  perform tests.ok(not exists (select 1 from jsonb_array_elements(public.external_sync_pending()) e where e ->> 'id' = r2.id::text), 'concluída sai da fila');
+  execute 'reset role';
+  select * into r3 from tests.mk('Pedido arquivado com vínculo externo ativo', null, 'Clínica Sim');
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform public.set_external_ref(r3.id, 'PIPEFY', 'card-9');
+  perform tests.logout();
+  execute 'set local role service_role';
+  perform public.external_apply_status(r3.id, 'Backlog');
+  execute 'reset role';
+  update public.requests set status = 'ARQUIVADO' where id = r3.id;
+  execute 'set local role service_role';
+  perform tests.ok(public.external_apply_status(r3.id, 'Em desenvolvimento') ->> 'result' = 'same', 'solicitação arquivada não é reaberta pelo sistema externo');
+  execute 'reset role';
+
+  -- botão do painel: exige permissão e o banco ligado
+  perform tests.login('a0000000-0000-0000-0000-000000000004', 'aal2');
+  perform tests.fails($$select public.admin_sync_external_now()$$, 'forbidden', 'DEV (só leitura) não sincroniza');
+  perform tests.logout();
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform tests.fails($$select public.admin_sync_external_now()$$, 'notify_not_configured', 'sincronizar exige o banco ligado à função');
+  perform tests.logout();
+  insert into private.app_settings (key, value) values ('notify_url', 'https://x.supabase.co/functions/v1/notify'), ('notify_secret', 'segredo-teste-com-mais-de-trinta-caracteres');
+  select count(*) into n from net.calls;
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform public.admin_sync_external_now();
+  perform tests.logout();
+  perform tests.ok((select count(*) = n + 1 from net.calls) and (select url = 'https://x.supabase.co/functions/v1/external-sync' and headers ->> 'x-webhook-secret' like 'segredo-teste%' from net.calls order by id desc limit 1), 'botão chama /external-sync com o segredo no cabeçalho');
+  delete from private.app_settings where key in ('notify_url', 'notify_secret');
+  perform tests.ok(not has_function_privilege('anon', 'public.external_apply_status(uuid, text)', 'execute') and not has_function_privilege('authenticated', 'public.external_sync_pending()', 'execute') and has_function_privilege('anon', 'public.find_similar_requests(text, text)', 'execute'), 'permissões das funções novas');
+  update public.requests set is_public = false where id = r1.id;   -- não interfere nos testes do roadmap, que esperam só o seu pedido publicado
+end $t$;
+
 -- ───────── 25. roadmap público e votos ─────────
 do $t$
 declare r1 record; r2 record; r3 record; a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); j jsonb; n int; v_sub uuid := gen_random_uuid(); v_extra uuid;

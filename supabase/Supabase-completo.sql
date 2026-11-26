@@ -5,9 +5,9 @@
 --   PARTE A  Banco inteiro: tabelas, permissões (RBAC), auditoria, RLS, funções (RPC), Storage, MFA, SLA, métricas…
 --   PARTE B  Tudo o que era opcional ou manual, agora como chaves no começo da Parte B (tudo vem DESLIGADO/vazio):
 --            primeiro administrador, clínicas iniciais, e-mails automáticos (ligar/desligar), prazos do alerta de atraso,
---            limpeza mensal, resumo diário (agendar/cancelar) e limpeza imediata. Não é preciso mais nenhum outro SQL.
+--            limpeza mensal, resumo diário e sincronização do Redmine/Pipefy (agendar/cancelar) e limpeza imediata. Não é preciso mais nenhum outro SQL.
 --
--- As Edge Functions (notify, external-task, admin-users) são código Deno e não rodam no SQL Editor:
+-- As Edge Functions (notify, external-task, external-sync, admin-users) são código Deno e não rodam no SQL Editor:
 -- publique-as em Edge Functions (veja PASSO_A_PASSO.md, Partes 5 e 6).
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -1625,6 +1625,144 @@ revoke all on private.app_settings from public, anon, authenticated;
 revoke all on private.notify_log from public, anon, authenticated;
 revoke all on sequence private.notify_log_id_seq from public, anon, authenticated;
 
+-- ───────── v3.9 · pedidos parecidos (formulário) e status vindo do Redmine/Pipefy ─────────
+
+-- Sugere pedidos JÁ PUBLICADOS no roadmap parecidos com o que a pessoa está digitando (só título, status e apoios:
+-- nada de dados pessoais, nada de pedidos não publicados). Compara palavras relevantes (4+ letras, sem acento).
+create or replace function public.find_similar_requests(p_title text, p_description text default null)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_words text[]; v_min int; v_rows jsonb;
+begin
+  if length(trim(coalesce(p_title, ''))) < 8 then return '[]'::jsonb; end if;
+  select coalesce(array_agg(x.w order by length(x.w) desc, x.w), '{}') into v_words
+  from (select distinct w
+        from regexp_split_to_table(private.norm(left(trim(coalesce(p_title, '')) || ' ' || coalesce(p_description, ''), 600)), '[^a-z0-9]+') w
+        where length(w) >= 4
+          and w <> all (array['para','como','esta','esse','essa','isso','pelo','pela','pelos','pelas','com','sem','sobre','quando',
+                              'onde','mais','muito','mesmo','tambem','deve','poder','pode','podem','fazer','forma','gostaria',
+                              'preciso','precisamos','seria','sistema','funcionalidade','melhoria','solicitacao','necessario',
+                              'permitir','gostariamos','possivel','quero','queremos'])
+        limit 40) x;
+  v_words := v_words[1:12];
+  if coalesce(array_length(v_words, 1), 0) < 2 then return '[]'::jsonb; end if;
+  v_min := greatest(2, ceil(array_length(v_words, 1) / 2.0)::int);
+  select coalesce(jsonb_agg(t.j order by t.hits desc, t.votes desc), '[]'::jsonb) into v_rows from (
+    select s.hits, s.votes,
+           jsonb_build_object('id', s.id, 'protocol', s.protocol, 'title', s.title, 'status', s.status, 'module', s.module,
+                              'votes', s.votes, 'excerpt', left(s.description, 160)) as j
+    from (select r.id, r.protocol, r.title, r.status, r.module, r.description,
+                 (select count(*) from public.request_votes v where v.request_id = r.id) as votes,
+                 (select count(*) from unnest(v_words) w where position(w in private.norm(r.title || ' ' || r.description)) > 0) as hits
+          from public.requests r
+          where r.is_public and r.deleted_at is null and r.merged_into_id is null) s
+    where s.hits >= v_min
+    order by s.hits desc, s.votes desc
+    limit 5) t;
+  return v_rows;
+end $$;
+
+-- Status do Redmine/Pipefy → etapa do Conceive. O nome (em minúsculas e sem acento) é o do status no Redmine ou o da FASE
+-- no Pipefy. Edite à vontade (insert/update/delete nesta tabela); status sem linha aqui não mudam nada.
+create table if not exists private.external_status_map (
+  system          text not null check (system in ('REDMINE', 'PIPEFY')),
+  external_status text not null,
+  status          public.request_status not null,
+  primary key (system, external_status)
+);
+insert into private.external_status_map (system, external_status, status) values
+  ('REDMINE', 'new', 'APROVADO_ROADMAP'), ('REDMINE', 'nova', 'APROVADO_ROADMAP'),
+  ('REDMINE', 'in progress', 'EM_DESENVOLVIMENTO'), ('REDMINE', 'em andamento', 'EM_DESENVOLVIMENTO'),
+  ('REDMINE', 'em progresso', 'EM_DESENVOLVIMENTO'),
+  ('REDMINE', 'resolved', 'CONCLUIDO'), ('REDMINE', 'resolvida', 'CONCLUIDO'),
+  ('REDMINE', 'closed', 'CONCLUIDO'), ('REDMINE', 'fechada', 'CONCLUIDO'), ('REDMINE', 'concluida', 'CONCLUIDO'),
+  ('PIPEFY', 'backlog', 'APROVADO_ROADMAP'), ('PIPEFY', 'a fazer', 'APROVADO_ROADMAP'), ('PIPEFY', 'to do', 'APROVADO_ROADMAP'),
+  ('PIPEFY', 'em desenvolvimento', 'EM_DESENVOLVIMENTO'), ('PIPEFY', 'desenvolvimento', 'EM_DESENVOLVIMENTO'),
+  ('PIPEFY', 'doing', 'EM_DESENVOLVIMENTO'),
+  ('PIPEFY', 'concluido', 'CONCLUIDO'), ('PIPEFY', 'finalizado', 'CONCLUIDO'), ('PIPEFY', 'done', 'CONCLUIDO'),
+  ('PIPEFY', 'publicado', 'CONCLUIDO')
+on conflict do nothing;
+
+-- Último status externo visto por solicitação. Fica FORA de public.requests de propósito: atualizar a solicitação a cada
+-- verificação mexeria no "updated_at" (e no alerta de pedido parado) e encheria a auditoria.
+create table if not exists private.external_sync_state (
+  request_id      uuid primary key references public.requests(id),
+  external_status text,
+  checked_at      timestamptz not null default now()
+);
+alter table private.external_status_map enable row level security;
+alter table private.external_sync_state enable row level security;
+revoke all on private.external_status_map from public, anon, authenticated;
+revoke all on private.external_sync_state from public, anon, authenticated;
+
+-- Lista (até 50, as verificadas há mais tempo) as solicitações vinculadas e ainda abertas. SÓ a função external-sync (service_role).
+create or replace function public.external_sync_pending()
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select coalesce(jsonb_agg(x.j), '[]'::jsonb) from (
+    select jsonb_build_object('id', r.id, 'system', r.external_system, 'external_id', r.external_id) as j
+    from public.requests r
+    left join private.external_sync_state s on s.request_id = r.id
+    where r.external_id is not null and r.external_system is not null
+      and r.deleted_at is null and r.merged_into_id is null and r.status not in ('CONCLUIDO', 'ARQUIVADO')
+    order by s.checked_at nulls first, r.created_at
+    limit 50) x
+$$;
+
+-- Aplica o status lido no sistema externo. Só age quando o status externo MUDOU desde a última leitura (a primeira leitura
+-- só registra), e só se houver linha na tabela de mapeamento: assim uma decisão manual do PO não é desfeita a cada verificação.
+-- A mudança passa pelos mesmos gatilhos de sempre: auditoria (sem autor) e e-mail ao cliente. SÓ a função external-sync.
+create or replace function public.external_apply_status(p_id uuid, p_external_status text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare r public.requests; v_name text := left(trim(coalesce(p_external_status, '')), 120);
+        v_key text; v_prev text; v_new public.request_status;
+begin
+  v_key := private.norm(v_name);
+  if v_key = '' then return jsonb_build_object('result', 'ignored'); end if;
+  select * into r from public.requests
+   where id = p_id and deleted_at is null and merged_into_id is null and external_id is not null;
+  if not found then return jsonb_build_object('result', 'not_found'); end if;
+  select s.external_status into v_prev from private.external_sync_state s where s.request_id = r.id;
+  insert into private.external_sync_state (request_id, external_status, checked_at) values (r.id, v_name, now())
+  on conflict (request_id) do update set external_status = excluded.external_status, checked_at = excluded.checked_at;
+  if v_prev is null then return jsonb_build_object('result', 'baseline'); end if;
+  if private.norm(trim(v_prev)) = v_key then return jsonb_build_object('result', 'unchanged'); end if;
+  select m.status into v_new from private.external_status_map m where m.system = r.external_system and m.external_status = v_key;
+  if v_new is null then return jsonb_build_object('result', 'unmapped', 'external_status', v_name, 'system', r.external_system); end if;
+  if r.status = 'ARQUIVADO' or r.status = v_new then return jsonb_build_object('result', 'same'); end if;
+  update public.requests set status = v_new where id = r.id;
+  return jsonb_build_object('result', 'updated', 'from', r.status, 'to', v_new);
+end $$;
+
+-- Chama a função external-sync (mesmo endereço e segredo dos e-mails). Usada pelo agendamento e pelo botão do painel.
+create or replace function private.run_external_sync()
+returns bigint language plpgsql security definer set search_path = '' as $$
+declare v_url text; v_secret text;
+begin
+  select s.value into v_url    from private.app_settings s where s.key = 'notify_url';
+  select s.value into v_secret from private.app_settings s where s.key = 'notify_secret';
+  if coalesce(v_url, '') = '' or coalesce(v_secret, '') = '' then return null; end if;
+  return net.http_post(url := regexp_replace(v_url, '/notify/?$', '/external-sync'), body := '{}'::jsonb,
+           headers := jsonb_build_object('Content-Type', 'application/json', 'x-webhook-secret', v_secret));
+exception when others then return null;
+end $$;
+
+-- Botão "Sincronizar status agora" do detalhe da solicitação.
+create or replace function public.admin_sync_external_now()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.require('request:export_dev');
+  if private.run_external_sync() is null then raise exception 'notify_not_configured'; end if;
+  return jsonb_build_object('queued', true);
+end $$;
+
+revoke all on function public.external_sync_pending(), public.external_apply_status(uuid, text) from public, anon, authenticated;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.external_sync_pending(), public.external_apply_status(uuid, text) to service_role;
+  end if;
+end $$;
+grant execute on function public.find_similar_requests(text, text) to anon, authenticated;
+grant execute on function public.admin_sync_external_now() to authenticated;
+
 -- Pede ao PostgREST (API do Supabase) para reler o schema, caso não tenha feito sozinho.
 notify pgrst, 'reload schema';
 
@@ -1644,7 +1782,8 @@ declare
   v_notify_desligar boolean := false;                 -- true = desliga os e-mails automáticos (apaga URL e segredo gravados)
   v_sla_primeiro_dias int := null;                    -- dias sem resposta para marcar "sem resposta" (vazio = mantém; padrão do sistema: 3)
   v_sla_parado_dias   int := null;                    -- dias sem movimentação para marcar "parada" (vazio = mantém; padrão do sistema: 15)
-  v_cron_cancelar boolean := false;                   -- true = cancela os agendamentos de limpeza e de resumo diário
+  v_cron_cancelar boolean := false;                   -- true = cancela todos os agendamentos (limpeza, resumo diário, sincronização)
+  v_cron_externo  boolean := false;                   -- true = agenda (a cada 10 min) a leitura do status no Redmine/Pipefy (exige pg_cron, e-mails ligados e a função external-sync)
   -- =========================================================
   v_id uuid;
   v_n  integer;
@@ -1705,7 +1844,7 @@ begin
   end if;
 
   if v_cron_cancelar and exists (select 1 from pg_extension where extname = 'pg_cron') then
-    perform cron.unschedule(jobid) from cron.job where jobname in ('conceive_limpeza_anonimos', 'conceive_resumo_sla');
+    perform cron.unschedule(jobid) from cron.job where jobname in ('conceive_limpeza_anonimos', 'conceive_resumo_sla', 'conceive_sync_externo');
     raise notice 'CRON: agendamentos cancelados.';
   end if;
 
@@ -1724,7 +1863,7 @@ begin
     raise notice 'LIMPEZA: % sessões anônimas antigas apagadas.', v_n;
   end if;
 
-  if (v_cron_limpeza or v_cron_sla) and not v_cron_cancelar then
+  if (v_cron_limpeza or v_cron_sla or v_cron_externo) and not v_cron_cancelar then
     execute 'create extension if not exists pg_cron';
   end if;
   if v_cron_limpeza and not v_cron_cancelar then
@@ -1734,6 +1873,11 @@ begin
       where u.is_anonymous and u.created_at < now() - interval '30 days'
         and not exists (select 1 from storage.objects o where o.owner = u.id) $cron$);
     raise notice 'CRON: limpeza mensal agendada (dia 1, 03:00 UTC).';
+  end if;
+  if v_cron_externo and not v_cron_cancelar then
+    perform cron.unschedule(jobid) from cron.job where jobname = 'conceive_sync_externo';
+    perform cron.schedule('conceive_sync_externo', '*/10 * * * *', $cron$ select private.run_external_sync() $cron$);
+    raise notice 'CRON: sincronização do Redmine/Pipefy agendada (a cada 10 minutos).';
   end if;
   if v_cron_sla and not v_cron_cancelar then
     perform cron.unschedule(jobid) from cron.job where jobname = 'conceive_resumo_sla';

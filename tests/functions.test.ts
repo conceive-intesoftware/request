@@ -1,4 +1,4 @@
-// Testes das Edge Functions (notify, external-task) e do script de CSP, com fetch falso.
+// Testes das Edge Functions (notify, external-task, external-sync) e do script de CSP, com fetch falso.
 //   NODE_PATH=... tsx tests/functions.test.ts
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handle as notify } from "../supabase/functions/notify/index";
 import { handle as external } from "../supabase/functions/external-task/index";
+import { handle as extSync } from "../supabase/functions/external-sync/index";
 import { handle as adminUsers, passwordProblem } from "../supabase/functions/admin-users/index";
 // @ts-ignore — módulo .mjs sem tipos
 import { buildCsp, injectCsp, run as runCsp } from "../scripts/apply-csp.mjs";
@@ -452,6 +453,75 @@ await test("falha ao gravar o vínculo → 500 mas devolve o id criado (não se 
   const r = await external(call({ request_id: REQ_ID, system: "REDMINE" }), EENV, f);
   assert.equal(r.status, 500);
   assert.deepEqual(await r.json(), { error: "link_failed", system: "REDMINE", id: "4521", url: "https://redmine.exemplo.com/issues/4521" });
+});
+
+console.log("external-sync");
+const SYNC_SB = "https://abc.supabase.co", SKEY = "service-key-SEGREDO";
+const SENV = { WEBHOOK_SECRET: SECRET, SUPABASE_URL: SYNC_SB, SUPABASE_SERVICE_ROLE_KEY: SKEY, REDMINE_URL: "https://redmine.x.com/", REDMINE_API_KEY: "rk", PIPEFY_TOKEN: "pt" };
+const sCall = (headers: Record<string, string> = { "x-webhook-secret": SECRET }) => new Request("https://f.test/sync", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: "{}" });
+const R1 = "11111111-1111-4111-8111-111111111111", R2 = "22222222-2222-4222-8222-222222222222", R3 = "33333333-3333-4333-8333-333333333333";
+function syncRouter(pending: unknown[], statuses: Record<string, any>, results: Record<string, unknown>) {
+  return fakeFetch((c) => {
+    if (c.url.endsWith("/rpc/external_sync_pending")) return { body: pending };
+    if (c.url.endsWith("/rpc/external_apply_status")) return { body: results[JSON.parse(c.init.body).p_id] ?? { result: "unchanged" } };
+    if (c.url.includes("/issues/")) { const id = c.url.split("/issues/")[1].replace(".json", ""); return statuses[`R${id}`] ?? { status: 404, body: {} }; }
+    if (c.url.includes("pipefy")) return statuses[`P${JSON.parse(c.init.body).variables.id}`] ?? { status: 200, body: { data: { card: null } } };
+    return { status: 500, body: {} };
+  });
+}
+await test("external-sync: sem segredo/segredo errado → 401 com o motivo; GET → 405", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  assert.equal((await extSync(sCall({}), SENV, f)).status, 401);
+  const w = await extSync(sCall({ "x-webhook-secret": "errado" }), SENV, f);
+  assert.equal(w.status, 401); assert.match((await w.json()).reason, /diferente/);
+  assert.equal((await extSync(sCall(), { ...SENV, WEBHOOK_SECRET: undefined }, f)).status, 401);
+  assert.equal((await extSync(new Request("https://f.test/", { method: "GET" }), SENV, f)).status, 405);
+  assert.equal(calls.length, 0);
+});
+await test("external-sync: sem chave de serviço → 500; sem Redmine nem Pipefy → 501 (antes de ler o banco)", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  assert.equal((await extSync(sCall(), { ...SENV, SUPABASE_SERVICE_ROLE_KEY: undefined }, f)).status, 500);
+  const r = await extSync(sCall(), { ...SENV, REDMINE_URL: undefined, PIPEFY_TOKEN: undefined }, f);
+  assert.equal(r.status, 501);
+  assert.equal(calls.length, 0);
+});
+await test("external-sync: lê Redmine e Pipefy, aplica no banco com a chave de serviço e resume", async () => {
+  const { f, calls } = syncRouter(
+    [{ id: R1, system: "REDMINE", external_id: "77" }, { id: R2, system: "PIPEFY", external_id: "card_9" }, { id: R3, system: "REDMINE", external_id: "88" }],
+    { R77: { body: { issue: { status: { name: "In Progress" } } } }, Pcard_9: { body: { data: { card: { current_phase: { name: "Em revisão" } } } } }, R88: { status: 404, body: {} } },
+    { [R1]: { result: "updated", from: "APROVADO_ROADMAP", to: "EM_DESENVOLVIMENTO" }, [R2]: { result: "unmapped", external_status: "Em revisão", system: "PIPEFY" } });
+  const r = await extSync(sCall(), SENV, f);
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { checked: 3, updated: 1, baseline: 0, unchanged: 0, errors: 1, skipped: 0, unmapped: ["PIPEFY: Em revisão"] });
+  const red = calls.find((c) => c.url.includes("/issues/77.json"))!;
+  assert.equal(red.url, "https://redmine.x.com/issues/77.json");
+  assert.equal(red.init.headers["x-redmine-api-key"], "rk");
+  const apply = calls.filter((c) => c.url.endsWith("/rpc/external_apply_status"));
+  assert.equal(apply.length, 2);
+  assert.deepEqual(JSON.parse(apply[0].init.body), { p_id: R1, p_external_status: "In Progress" });
+  assert.equal(apply[0].init.headers.authorization, `Bearer ${SKEY}`);
+  assert.equal(apply[0].init.headers.apikey, SKEY);
+});
+await test("external-sync: sistema não configurado e ids estranhos são pulados, sem chamar ninguém", async () => {
+  const { f, calls } = syncRouter(
+    [{ id: R1, system: "PIPEFY", external_id: "c1" }, { id: "x", system: "REDMINE", external_id: "1" }, { id: R2, system: "REDMINE", external_id: "../etc" }, { id: R3, system: "OUTRO", external_id: "1" }], {}, {});
+  const r = await extSync(sCall(), { ...SENV, PIPEFY_TOKEN: undefined }, f);
+  assert.deepEqual(await r.json(), { checked: 0, updated: 0, baseline: 0, unchanged: 0, errors: 0, skipped: 4, unmapped: [] });
+  assert.equal(calls.filter((c) => !c.url.endsWith("/rpc/external_sync_pending")).length, 0);
+});
+await test("external-sync: falha ao listar → 502; erro de rede em uma tarefa não derruba as outras", async () => {
+  const bad = fakeFetch(() => ({ status: 500, body: {} }));
+  const a = await extSync(sCall(), SENV, bad.f);
+  assert.equal(a.status, 502);
+  let k = 0;
+  const f = (async (url: string, init?: any) => {
+    if (url.endsWith("/rpc/external_sync_pending")) return { ok: true, status: 200, json: async () => [{ id: R1, system: "REDMINE", external_id: "1" }, { id: R2, system: "REDMINE", external_id: "2" }] };
+    if (url.includes("/issues/1.json")) { k++; throw new Error("rede"); }
+    if (url.includes("/issues/2.json")) return { ok: true, status: 200, json: async () => ({ issue: { status: { name: "Closed" } } }) };
+    return { ok: true, status: 200, json: async () => ({ result: "updated" }) };
+  }) as any;
+  const b = await (await extSync(sCall(), SENV, f)).json();
+  assert.equal(k, 1); assert.equal(b.errors, 1); assert.equal(b.updated, 1);
 });
 
 console.log("apply-csp");

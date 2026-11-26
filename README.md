@@ -21,7 +21,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 │ Postgres: RPCs SECURITY DEFINER ──► checam permissão ──► mascaram PII ──►  │
 │           gravam auditoria; RLS; triggers; audit_logs imutável             │
 │ Storage: bucket privado "attachments" (50 MB, só tipos permitidos)         │
-│ Edge Functions: notify (e-mail via Brevo ou Resend) · external-task (Redmine/Pipefy)│
+│ Edge Functions: notify (e-mail via Brevo/Resend) · external-task + external-sync (Redmine/Pipefy)│
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -35,6 +35,8 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 - **Respostas do cliente** na página de acompanhamento (com anexos) e **pesquisa de satisfação** (1 a 5 estrelas) ao concluir.
 - **Métricas** (volume, tempos, satisfação, apoios) e **importação** da planilha antiga em CSV (admin).
 - **Criar tarefa no Redmine/Pipefy** direto do detalhe da solicitação.
+- **Status do Redmine/Pipefy de volta ao Conceive** (função `external-sync`, a cada 10 min ou pelo botão "Sincronizar status agora"), com mapeamento editável.
+- **Pedidos parecidos** sugeridos no formulário (só do roadmap público), para reduzir duplicidade.
 - **Tema** automático/claro/escuro, link "Pular para o conteúdo", **CSP** e proteção contra iframe.
 
 ## Segurança em camadas
@@ -50,7 +52,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 
 ```
 supabase/Supabase-completo.sql   TODO o banco em um arquivo único (+ opcionais na Parte B)   ← rodar no SQL Editor
-supabase/functions/              notify (Resend), external-task (Redmine/Pipefy) e admin-users (criar usuários)
+supabase/functions/              notify (Brevo/Resend), external-task e external-sync (Redmine/Pipefy) e admin-users (criar usuários)
 scripts/apply-csp.mjs            Insere a Content-Security-Policy no build
 supabase/tests/                  Mock do Supabase + suíte de testes do banco
 src/lib/                         api.ts (RPCs), validação, telefone, CSV, auth, roteador

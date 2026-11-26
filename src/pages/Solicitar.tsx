@@ -1,8 +1,9 @@
 import { Icon } from "../components/Icon";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ensureSession, hasSession, listUnits, searchClinics, submitRequest } from "../lib/api";
+import { ensureSession, findSimilarRequests, hasSession, listUnits, searchClinics, submitRequest } from "../lib/api";
+import type { SimilarRequest } from "../lib/types";
 import { TURNSTILE_SITE_KEY } from "../lib/supabase";
-import { MODULES, REQUESTER_ROLES, TYPES } from "../lib/labels";
+import { MODULES, REQUESTER_ROLES, STATUSES, TYPES, labelOf } from "../lib/labels";
 import { maskPhoneInput } from "../lib/phone";
 import { validateRequestForm, type FormErrors, type RequestFormValues } from "../lib/validate";
 import { errMsg, fmtDateTime } from "../lib/format";
@@ -48,6 +49,21 @@ export default function Solicitar() {
   const [submitting, setSubmitting] = useState(false);
   const [honeypot, setHoneypot] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  // Pedidos parecidos já publicados no roadmap (sugestão enquanto a pessoa digita; só título, status e apoios).
+  const [similar, setSimilar] = useState<SimilarRequest[]>([]);
+  const [similarDismissed, setSimilarDismissed] = useState("");
+  const similarKey = similar.map((x) => x.id).join(",");
+  useEffect(() => {
+    const title = v.title.trim();
+    if (title.length < 8) { setSimilar([]); return; }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      findSimilarRequests(title, v.description.trim().slice(0, 300))
+        .then((rows) => { if (!cancelled) setSimilar(Array.isArray(rows) ? rows : []); })
+        .catch(() => { if (!cancelled) setSimilar([]); });   // sugestão é um extra: qualquer falha é silenciosa
+    }, 700);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [v.title, v.description]);
   const [progress, setProgress] = useState<string | null>(null);
   const [done, setDone] = useState<{ protocol: string; token: string; email: string } | null>(null);
 
@@ -376,6 +392,22 @@ export default function Solicitar() {
         <Field label="Título da solicitação" htmlFor="title" error={errors.title}>
           <input id="title" className="input" placeholder="Digite um título resumido" maxLength={140} value={v.title} onChange={(e) => set("title", e.target.value)} />
         </Field>
+
+        {similarKey && similarKey !== similarDismissed && (
+          <div className="similar" role="status">
+            <p><strong>Já existe algo parecido no roadmap.</strong> Se for o mesmo pedido, apoie-o em vez de enviar outro: o seu apoio conta.</p>
+            <ul>
+              {similar.map((x) => (
+                <li key={x.id}>
+                  <a href="#/comunidade" target="_blank" rel="noopener noreferrer">{x.title}</a>{" "}
+                  <span className="tag outline">{labelOf(STATUSES, x.status)}</span>{" "}
+                  <small className="muted">{x.votes} {x.votes === 1 ? "apoio" : "apoios"}</small>
+                </li>
+              ))}
+            </ul>
+            <button type="button" className="link" onClick={() => setSimilarDismissed(similarKey)}>Não é o mesmo pedido, continuar</button>
+          </div>
+        )}
 
         <Field
           label="Descrição detalhada"
