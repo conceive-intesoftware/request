@@ -20,7 +20,11 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<ListResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // Link vindo do e-mail da equipe: #/admin?abrir=<id> abre o detalhe direto.
+  const [openId, setOpenId] = useState<string | null>(() => {
+    const m = /[?&]abrir=([0-9a-f-]{36})(?:&|$)/i.exec(window.location.hash);
+    return m ? m[1].toLowerCase() : null;
+  });
   const [clinics, setClinics] = useState<{ id: string; name: string }[]>([]);
   const seq = useRef(0);
 
@@ -162,7 +166,7 @@ export default function Dashboard({ ctx }: { ctx: Ctx }) {
         </>
       )}
 
-      {openId && <RequestDetail id={openId} ctx={ctx} clinics={clinics} onClose={() => setOpenId(null)} onChanged={() => void load()} />}
+      {openId && <RequestDetail id={openId} ctx={ctx} clinics={clinics} onClose={() => { setOpenId(null); if (window.location.hash.includes("abrir=")) window.history.replaceState(null, "", "#/admin"); }} onChanged={() => void load()} />}
     </div>
   );
 }

@@ -472,7 +472,9 @@ begin
   select s.value into v_secret from private.app_settings s where s.key = 'notify_secret';
   if coalesce(v_url, '') = '' or coalesce(v_secret, '') = '' then return; end if;
   begin
-    v_id := net.http_post(url := v_url, body := p_payload,
+    -- event_id identifica o evento: a função usa como Idempotency-Key no Resend (nova tentativa não duplica o e-mail)
+    v_id := net.http_post(url := v_url,
+      body := case when p_payload ? 'event_id' then p_payload else p_payload || jsonb_build_object('event_id', gen_random_uuid()) end,
       headers := jsonb_build_object('Content-Type', 'application/json', 'x-webhook-secret', v_secret));
     insert into private.notify_log (event, protocol, outcome, net_id)
     values (coalesce(p_payload ->> 'event', '?'), p_payload ->> 'protocol', 'ENFILEIRADO', v_id);
@@ -493,7 +495,7 @@ begin
   if tg_table_name = 'requests' then
     if new.origin <> 'FORM' then return new; end if;
     if tg_op = 'INSERT' then
-      v := jsonb_build_object('event', 'request_created', 'protocol', new.protocol, 'title', new.title,
+      v := jsonb_build_object('event', 'request_created', 'request_id', new.id, 'protocol', new.protocol, 'title', new.title,
              'module', new.module, 'type', new.type,
              'clinic_name', coalesce((select c.name from public.clinics c where c.id = new.clinic_id), new.pending_clinic_name),
              'client_email', new.requester_email, 'tracking_token', new.tracking_token,
@@ -508,7 +510,7 @@ begin
   else
     select * into r from public.requests where id = new.request_id;
     if new.author_kind = 'CLIENT' then
-      v := jsonb_build_object('event', 'client_reply', 'protocol', r.protocol, 'title', r.title, 'body', new.body);
+      v := jsonb_build_object('event', 'client_reply', 'request_id', r.id, 'protocol', r.protocol, 'title', r.title, 'body', new.body);
     elsif not new.is_internal and r.requester_email is not null then
       v := jsonb_build_object('event', 'comment_public', 'protocol', r.protocol, 'title', r.title, 'body', new.body,
              'client_email', r.requester_email, 'tracking_token', r.tracking_token);

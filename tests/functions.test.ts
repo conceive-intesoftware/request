@@ -163,6 +163,51 @@ await test("sla_digest: resumo só à equipe, com lista, contagem e link do pain
   assert.ok(m.html.includes("e mais 38"), "avisa quantas não couberam");
   assert.ok(m.html.includes("https://user.github.io/conceive-requests/#/admin"));
 });
+const RID = "123e4567-e89b-42d3-a456-426614174000";
+await test("e-mails da equipe trazem link direto para abrir a solicitação no painel", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  await notify(post({ ...created, request_id: RID }), ENV, f);
+  await notify(post({ event: "client_reply", protocol: "CON-2026-0004", title: "Estoque", body: "x", request_id: RID }), ENV, f);
+  await notify(post({ event: "client_reply", protocol: "CON-2026-0005", title: "Sem id", body: "x", request_id: "../x" }), ENV, f);
+  const b = sentBodies(calls);
+  const url = `https://user.github.io/conceive-requests/#/admin?abrir=${RID}`;
+  assert.ok(b[1].html.includes(url) && b[1].text.includes(url), "aviso de nova solicitação");
+  assert.ok(b[2].html.includes(url) && b[2].text.includes(url), "resposta do cliente");
+  assert.ok(b[3].text.includes("#/admin\n") && !b[3].text.includes("abrir="), "id inválido cai no painel geral");
+  assert.ok(!b[0].html.includes("abrir="), "o cliente nunca recebe link do painel");
+});
+await test("status CONCLUIDO pede a avaliação; outras etapas seguem o e-mail comum", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  const ev = { event: "status_changed", protocol: "CON-2026-0006", title: "Relatório", previous_status: "EM_DESENVOLVIMENTO", client_email: "c@d.com", tracking_token: TOKEN };
+  await notify(post({ ...ev, status: "CONCLUIDO" }), ENV, f);
+  await notify(post({ ...ev, status: "EM_ANALISE_PRODUTO" }), ENV, f);
+  const [done, other] = sentBodies(calls);
+  assert.match(done.subject, /conclu[ií]da/i);
+  assert.ok(done.html.includes("Avaliar o atendimento") && done.text.includes(`#/acompanhar/${TOKEN}`));
+  assert.match(other.subject, /mudou de etapa/);
+});
+await test("Reply-To só quando REPLY_TO é válido; rodapé muda junto", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  await notify(post(created), { ...ENV, REPLY_TO: "suporte@exemplo.com.br" }, f);
+  await notify(post(created), { ...ENV, REPLY_TO: "inválido" }, f);
+  await notify(post(created), ENV, f);
+  const b = sentBodies(calls);
+  assert.equal(b[0].reply_to, "suporte@exemplo.com.br");
+  assert.ok(b[0].html.includes("Basta responder este e-mail"));
+  assert.ok(!("reply_to" in b[2]) && b[2].html.includes("não é necessário respondê-la"));
+  assert.ok(!("reply_to" in b[4]));
+});
+await test("Idempotency-Key estável por evento e por e-mail; ausente sem event_id", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  await notify(post({ ...created, event_id: "9b2d6f1e-1111-4222-8333-444455556666" }), ENV, f);
+  await notify(post({ ...created, event_id: "9b2d6f1e-1111-4222-8333-444455556666" }), ENV, f);
+  await notify(post({ ...created, event_id: "não vale; \r\n" }), ENV, f);
+  const h = calls.map((c) => c.init.headers["idempotency-key"]);
+  assert.equal(h[0], "conceive-9b2d6f1e-1111-4222-8333-444455556666-0");
+  assert.equal(h[1], "conceive-9b2d6f1e-1111-4222-8333-444455556666-1");
+  assert.deepEqual(h.slice(0, 2), h.slice(2, 4), "repetição do mesmo evento usa as mesmas chaves");
+  assert.equal(h[4], undefined);
+});
 await test("sla_digest sem equipe cadastrada não envia nada", async () => {
   const { f, calls } = fakeFetch(() => ({}));
   const r = await notify(post({ event: "sla_digest", protocol: "RESUMO", title: "x", count: 1, items: [] }), { ...ENV, TEAM_EMAILS: "" }, f);

@@ -145,10 +145,14 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 
 1. Crie conta em resend.com, **verifique o seu domínio** (Domains) e crie uma **API key**.
 2. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `notify`, cole o conteúdo de `supabase/functions/notify/index.ts`. **Desligue "Enforce JWT verification"** (o banco chama a função sem login; quem protege é o segredo).
-3. Em **Edge Functions → Secrets**, cadastre: `WEBHOOK_SECRET` (frase longa e aleatória), `RESEND_API_KEY`, `MAIL_FROM` (ex.: `Conceive <contato@seudominio.com.br>`), `TEAM_EMAILS` (e-mails da equipe, separados por vírgula) e `SITE_URL` (endereço do site no GitHub Pages).
+3. Em **Edge Functions → Secrets**, cadastre: `WEBHOOK_SECRET` (frase longa e aleatória), `RESEND_API_KEY`, `MAIL_FROM` (ex.: `Conceive <contato@seudominio.com.br>`), `TEAM_EMAILS` (e-mails da equipe, separados por vírgula), `SITE_URL` (endereço do site no GitHub Pages) e, opcionalmente, `REPLY_TO` (endereço que recebe as respostas dos clientes; com ele, o rodapé passa a dizer “basta responder este e-mail”).
 4. Em **Database → Extensions**, confirme que `pg_net` está ligada.
 5. No `supabase/Supabase-completo.sql`, Parte B, preencha `v_notify_url` e `v_notify_secret` (o mesmo segredo do passo 3) e rode o arquivo de novo.
-6. Teste: envie uma solicitação com e-mail. O cliente recebe o link; a equipe recebe o aviso.
+6. Teste: envie uma solicitação com e-mail. O cliente recebe o link; a equipe recebe o aviso, com o botão **Abrir no painel** (abre direto a solicitação; se a pessoa não estiver logada, entra e é levada até ela).
+7. Ao marcar a solicitação como **Concluído**, o cliente recebe um e-mail pedindo a avaliação (1 a 5 estrelas) na página de acompanhamento.
+8. Cada evento carrega um identificador que vira o cabeçalho `Idempotency-Key` no Resend: se o mesmo evento for reenviado, o Resend ignora a repetição em até 24 h, sem e-mail duplicado.
+
+> **Atualizando uma instalação existente:** republique a função `notify` (conteúdo novo de `index.ts`), rode o `Supabase-completo.sql` inteiro de novo e publique o site (o link direto usa o painel novo).
 
 ### 5.2 Criar tarefa no Redmine/Pipefy (função `external-task`)
 1. Publique a função `external-task` (conteúdo de `supabase/functions/external-task/index.ts`) com **"Enforce JWT verification" LIGADO**.

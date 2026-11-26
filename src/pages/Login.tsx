@@ -33,7 +33,13 @@ export default function Login({ onDone }: { onDone: () => Promise<void> }) {
     await logLogin().catch(() => undefined);
     // Atualiza o estado global ANTES de navegar; senão o painel enxerga a sessão antiga e volta para o login.
     await onDone();
-    navigate("/admin");
+    let next = "/admin";
+    try {
+      const saved = sessionStorage.getItem("conceive:next");
+      sessionStorage.removeItem("conceive:next");
+      if (saved && /^#\/admin\?abrir=[0-9a-f-]{36}$/i.test(saved)) next = saved.slice(1);
+    } catch { /* sem armazenamento */ }
+    navigate(next);
   }
 
   async function onCredentials(e: FormEvent) {

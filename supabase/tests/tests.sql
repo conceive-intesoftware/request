@@ -673,6 +673,7 @@ begin
   select id into v_id from public.requests where tracking_token = v_tok;
   select body into b from net.calls order by id desc limit 1;
   perform tests.ok(b ->> 'event' = 'request_created' and b ->> 'client_email' = 'cliente@exemplo.com' and b ->> 'tracking_token' = v_tok and b ->> 'clinic_name' = 'Clínica Aviso', 'novo pedido dispara request_created com e-mail, token e clínica');
+  perform tests.ok((b ->> 'event_id') ~ '^[0-9a-f-]{36}$' and (b ->> 'request_id') ~ '^[0-9a-f-]{36}$', 'payload traz event_id (idempotência) e request_id (link do painel)');
   perform tests.ok(b ->> 'requester_name' = 'Fulano de Tal' and b::text !~ '84998493000', 'payload leva só o nome (saudação do e-mail ao próprio cliente), nunca o telefone');
   perform tests.ok((select headers ->> 'x-webhook-secret' = 'segredo-teste' and url like '%/notify' from net.calls order by id desc limit 1), 'segredo vai no cabeçalho');
 
@@ -698,6 +699,7 @@ begin
   perform tests.logout();
   select body into b from net.calls order by id desc limit 1;
   perform tests.ok(b ->> 'event' = 'client_reply' and b ->> 'body' = 'Resposta do cliente' and not (b ? 'client_email'), 'resposta do cliente dispara client_reply (só para a equipe)');
+  perform tests.ok((b ->> 'request_id') ~ '^[0-9a-f-]{36}$' and (b ->> 'event_id') is not null, 'client_reply leva request_id para o link do painel');
 
   -- pedido antigo (importado/anterior à obrigatoriedade) sem e-mail: cliente não recebe nada nas mudanças
   update public.requests set requester_email = null where id = tests.get('id1')::uuid;

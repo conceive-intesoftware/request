@@ -8,6 +8,7 @@
 //   MAIL_FROM        ex.: Conceive <solicitacoes@seudominio.com.br>  (domínio verificado no Resend)
 //   SITE_URL         endereço do site, ex.: https://usuario.github.io/conceive-requests/
 //   TEAM_EMAILS      (opcional) e-mails da equipe, separados por vírgula
+//   REPLY_TO         (opcional) endereço que recebe as respostas dos clientes (cabeçalho Reply-To)
 //
 // Eventos aceitos (JSON): request_created, status_changed, comment_public, client_reply, sla_digest (resumo diário da equipe).
 
@@ -35,6 +36,8 @@ const oneLine = (s: unknown, max = 120) => String(s ?? "").replace(/\s+/g, " ").
 const EMAIL_RE = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]{2,}$/;
 const validEmail = (v: unknown): v is string => typeof v === "string" && v.length <= 254 && EMAIL_RE.test(v.trim());
 const TOKEN_RE = /^[0-9a-f]{48}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EVENT_ID_RE = /^[0-9A-Za-z-]{8,64}$/;
 
 function safeEqual(a: string, b: string): boolean {
   const ea = new TextEncoder().encode(a), eb = new TextEncoder().encode(b);
@@ -49,7 +52,12 @@ const json = (status: number, body: unknown) =>
 
 interface Mail { to: string[]; subject: string; html: string; text: string }
 
-function layout(heading: string, bodyHtml: string, button?: { url: string; text: string }, formal = false): string {
+/** Link do painel que já abre a solicitação (só funciona para quem tem login de equipe). */
+function adminLink(site: string, id: unknown): string {
+  return typeof id === "string" && UUID_RE.test(id) ? `${site}#/admin?abrir=${id.toLowerCase()}` : `${site}#/admin`;
+}
+
+function baseLayout(heading: string, bodyHtml: string, button?: { url: string; text: string }, formal = false, replyable = false): string {
   const btn = button
     ? `<p style="margin:24px 0"><a href="${esc(button.url)}" style="background:#4c1d95;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">${esc(button.text)}</a></p>
        <p style="color:#6b6880;font-size:13px">Se o botão não funcionar, copie este endereço no navegador:<br>${esc(button.url)}</p>`
@@ -62,7 +70,7 @@ function layout(heading: string, bodyHtml: string, button?: { url: string; text:
 ${bodyHtml}${btn}
 </div>
 ${formal ? `<p style="margin:16px 0 0;font-size:14px">Atenciosamente,<br><strong>Equipe Conceive</strong></p>` : ""}
-<p style="color:#6b6880;font-size:12px;margin-top:16px">Esta é uma mensagem automática; não é necessário respondê-la. Você a recebeu porque este endereço de e-mail foi informado em uma solicitação registrada na Conceive. Os dados pessoais são tratados em conformidade com a Lei Geral de Proteção de Dados (LGPD).</p>
+<p style="color:#6b6880;font-size:12px;margin-top:16px">${replyable ? "Dúvidas? Basta responder este e-mail." : "Esta é uma mensagem automática; não é necessário respondê-la."} Você a recebeu porque este endereço de e-mail foi informado em uma solicitação registrada na Conceive. Os dados pessoais são tratados em conformidade com a Lei Geral de Proteção de Dados (LGPD).</p>
 </div></body></html>`;
 }
 
@@ -85,6 +93,9 @@ function buildMails(p: any, env: Env): Mail[] {
   const proto = oneLine(p.protocol, 40);
   const title = oneLine(p.title, 140);
   const mails: Mail[] = [];
+  const replyable = validEmail(env.REPLY_TO);
+  const layout = (h: string, b: string, btn?: { url: string; text: string }, formal = false) => baseLayout(h, b, btn, formal, replyable);
+  const panel = adminLink(site, p.request_id);
 
   switch (p.event) {
     case "request_created": {
@@ -112,8 +123,9 @@ function buildMails(p: any, env: Env): Mail[] {
           to: team,
           subject: `[${proto}] Nova solicitação: ${title}`,
           html: layout("Nova solicitação recebida",
-            `<table style="border-collapse:collapse">${row("Protocolo", proto)}${row("Título", title)}${row("Módulo", mod)}${row("Tipo", typ)}${row("Clínica", clin)}</table>`),
-          text: `Nova solicitação recebida.\nProtocolo: ${proto}\nTítulo: ${title}\nMódulo: ${mod}\nTipo: ${typ}\nClínica: ${clin}\n`,
+            `<table style="border-collapse:collapse">${row("Protocolo", proto)}${row("Título", title)}${row("Módulo", mod)}${row("Tipo", typ)}${row("Clínica", clin)}</table>`,
+            { url: panel, text: "Abrir no painel" }),
+          text: `Nova solicitação recebida.\nProtocolo: ${proto}\nTítulo: ${title}\nMódulo: ${mod}\nTipo: ${typ}\nClínica: ${clin}\n\nAbrir no painel: ${panel}\n`,
         });
       }
       break;
@@ -121,14 +133,27 @@ function buildMails(p: any, env: Env): Mail[] {
     case "status_changed": {
       if (client.length && link) {
         const st = label(STATUSES, p.status), prev = label(STATUSES, p.previous_status);
-        mails.push({
-          to: client,
-          subject: `[${proto}] Sua solicitação mudou de etapa: ${st}`,
-          html: layout("Sua solicitação mudou de etapa",
-            `<p>${esc(title)}</p><table style="border-collapse:collapse">${row("Protocolo", proto)}${row("Etapa anterior", prev)}${row("Etapa atual", st)}</table>`,
-            { url: link, text: "Acompanhar solicitação" }),
-          text: `Sua solicitação ${proto} mudou de etapa.\n${title}\nDe: ${prev}\nPara: ${st}\n\nAcompanhe: ${link}\n`,
-        });
+        if (p.status === "CONCLUIDO") {
+          // Concluída: além de avisar, pede a avaliação (1 a 5), que fica na própria página de acompanhamento.
+          mails.push({
+            to: client,
+            subject: `[${proto}] Solicitação concluída: conte como foi o atendimento`,
+            html: layout("Sua solicitação foi concluída",
+              `<p>${esc(title)}</p><table style="border-collapse:collapse">${row("Protocolo", proto)}${row("Etapa anterior", prev)}${row("Etapa atual", st)}</table>
+               <p>Sua opinião nos ajuda a melhorar. Leva menos de um minuto: abra a página de acompanhamento e dê uma nota de 1 a 5 estrelas.</p>`,
+              { url: link, text: "Avaliar o atendimento" }),
+            text: `Sua solicitação ${proto} foi concluída.\n${title}\n\nSua opinião nos ajuda a melhorar. Abra a página de acompanhamento e dê uma nota de 1 a 5 estrelas:\n${link}\n`,
+          });
+        } else {
+          mails.push({
+            to: client,
+            subject: `[${proto}] Sua solicitação mudou de etapa: ${st}`,
+            html: layout("Sua solicitação mudou de etapa",
+              `<p>${esc(title)}</p><table style="border-collapse:collapse">${row("Protocolo", proto)}${row("Etapa anterior", prev)}${row("Etapa atual", st)}</table>`,
+              { url: link, text: "Acompanhar solicitação" }),
+            text: `Sua solicitação ${proto} mudou de etapa.\n${title}\nDe: ${prev}\nPara: ${st}\n\nAcompanhe: ${link}\n`,
+          });
+        }
       }
       break;
     }
@@ -153,8 +178,9 @@ function buildMails(p: any, env: Env): Mail[] {
           to: team,
           subject: `[${proto}] O cliente respondeu`,
           html: layout("O cliente respondeu",
-            `<p>${esc(title)}</p><blockquote style="margin:12px 0;padding:8px 14px;border-left:4px solid #6d28d9;background:#f6f5fa;white-space:pre-wrap">${esc(body)}</blockquote>`),
-          text: `O cliente respondeu na solicitação ${proto}.\n${title}\n\n${body}\n`,
+            `<p>${esc(title)}</p><blockquote style="margin:12px 0;padding:8px 14px;border-left:4px solid #6d28d9;background:#f6f5fa;white-space:pre-wrap">${esc(body)}</blockquote>`,
+            { url: panel, text: "Abrir no painel" }),
+          text: `O cliente respondeu na solicitação ${proto}.\n${title}\n\n${body}\n\nAbrir no painel: ${panel}\n`,
         });
       }
       break;
@@ -197,14 +223,19 @@ export async function handle(req: Request, env: Env, fetchFn: FetchFn): Promise<
   if (!env.RESEND_API_KEY || !env.MAIL_FROM || !env.SITE_URL) return json(500, { error: "not_configured" });
 
   const mails = buildMails(payload, env);
+  const replyTo = validEmail(env.REPLY_TO) ? env.REPLY_TO.trim() : undefined;
+  const eventId = typeof payload.event_id === "string" && EVENT_ID_RE.test(payload.event_id) ? payload.event_id : null;
   let sent = 0;
-  for (const m of mails) {
+  for (const [i, m] of mails.entries()) {
     let ok = false;
     try {
+      const headers: Record<string, string> = { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" };
+      // Mesmo evento reenviado (nova tentativa) não gera e-mail duplicado: o Resend ignora a repetição por 24 h.
+      if (eventId) headers["idempotency-key"] = `conceive-${eventId}-${i}`;
       const r = await fetchFn("https://api.resend.com/emails", {
         method: "POST",
-        headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" },
-        body: JSON.stringify({ from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text }),
+        headers,
+        body: JSON.stringify({ from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(replyTo ? { reply_to: replyTo } : {}) }),
       });
       ok = r.ok;
     } catch { ok = false; }

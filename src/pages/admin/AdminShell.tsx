@@ -18,7 +18,11 @@ export default function AdminShell({ auth }: { auth: AuthState }) {
   const { ctx, loading } = auth;
 
   useEffect(() => {
-    if (!loading && !ctx?.uid) navigate("/login");
+    if (!loading && !ctx?.uid) {
+      // Guarda o destino (ex.: link do e-mail da equipe) para voltar a ele depois do login.
+      try { if (window.location.hash.includes("abrir=")) sessionStorage.setItem("conceive:next", window.location.hash); } catch { /* sem armazenamento */ }
+      navigate("/login");
+    }
   }, [loading, ctx]);
 
   if (loading) return <main className="page"><Spinner /></main>;
