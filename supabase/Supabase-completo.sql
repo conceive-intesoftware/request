@@ -3,12 +3,9 @@
 -- Cole TUDO no SQL Editor e clique em Run. Pode rodar de novo quantas vezes quiser (atualiza sem apagar dados).
 --
 --   PARTE A  Banco inteiro: tabelas, permissões (RBAC), auditoria, RLS, funções (RPC), Storage, MFA, SLA, métricas…
---   PARTE B  Opcionais controlados por chaves no começo da Parte B (tudo vem DESLIGADO):
---            primeiro administrador, clínicas iniciais, e-mails automáticos, limpeza mensal, resumo diário, limpeza agora.
---
--- Para desligar os e-mails depois:  delete from private.app_settings where key in ('notify_url','notify_secret');
--- Prazos do alerta de atraso (padrão 3 e 15 dias):  insert into private.app_settings values ('sla_first_days','2'),('sla_idle_days','10') on conflict (key) do update set value = excluded.value;
--- Cancelar agendamentos:  select cron.unschedule('conceive_limpeza_anonimos');  select cron.unschedule('conceive_resumo_sla');
+--   PARTE B  Tudo o que era opcional ou manual, agora como chaves no começo da Parte B (tudo vem DESLIGADO/vazio):
+--            primeiro administrador, clínicas iniciais, e-mails automáticos (ligar/desligar), prazos do alerta de atraso,
+--            limpeza mensal, resumo diário (agendar/cancelar) e limpeza imediata. Não é preciso mais nenhum outro SQL.
 --
 -- As Edge Functions (notify, external-task, admin-users) são código Deno e não rodam no SQL Editor:
 -- publique-as em Edge Functions (veja PASSO_A_PASSO.md, Partes 5 e 6).
@@ -1610,6 +1607,10 @@ declare
   v_cron_limpeza  boolean := false;                   -- true = agenda a limpeza mensal de anônimos (exige pg_cron)
   v_cron_sla      boolean := false;                   -- true = agenda o resumo diário de pedidos parados (exige pg_cron e e-mails)
   v_limpar_agora  boolean := false;                   -- true = apaga agora os anônimos com mais de 30 dias e sem arquivos
+  v_notify_desligar boolean := false;                 -- true = desliga os e-mails automáticos (apaga URL e segredo gravados)
+  v_sla_primeiro_dias int := null;                    -- dias sem resposta para marcar "sem resposta" (vazio = mantém; padrão do sistema: 3)
+  v_sla_parado_dias   int := null;                    -- dias sem movimentação para marcar "parada" (vazio = mantém; padrão do sistema: 15)
+  v_cron_cancelar boolean := false;                   -- true = cancela os agendamentos de limpeza e de resumo diário
   -- =========================================================
   v_id uuid;
   v_n  integer;
@@ -1643,6 +1644,31 @@ begin
     raise notice 'E-MAILS: ligados.';
   end if;
 
+  if v_notify_desligar then
+    delete from private.app_settings where key in ('notify_url', 'notify_secret');
+    raise notice 'E-MAILS: desligados.';
+  end if;
+
+  if v_sla_primeiro_dias is not null or v_sla_parado_dias is not null then
+    if coalesce(v_sla_primeiro_dias, 1) < 1 or coalesce(v_sla_parado_dias, 1) < 1 then
+      raise exception 'Os prazos do alerta de atraso precisam ser de 1 dia ou mais.';
+    end if;
+    if v_sla_primeiro_dias is not null then
+      insert into private.app_settings (key, value) values ('sla_first_days', v_sla_primeiro_dias::text)
+      on conflict (key) do update set value = excluded.value;
+    end if;
+    if v_sla_parado_dias is not null then
+      insert into private.app_settings (key, value) values ('sla_idle_days', v_sla_parado_dias::text)
+      on conflict (key) do update set value = excluded.value;
+    end if;
+    raise notice 'SLA: prazos atualizados.';
+  end if;
+
+  if v_cron_cancelar and exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.unschedule(jobid) from cron.job where jobname in ('conceive_limpeza_anonimos', 'conceive_resumo_sla');
+    raise notice 'CRON: agendamentos cancelados.';
+  end if;
+
   if v_limpar_agora then
     delete from auth.users u
     where u.is_anonymous and u.created_at < now() - interval '30 days'
@@ -1651,10 +1677,10 @@ begin
     raise notice 'LIMPEZA: % sessões anônimas antigas apagadas.', v_n;
   end if;
 
-  if v_cron_limpeza or v_cron_sla then
+  if (v_cron_limpeza or v_cron_sla) and not v_cron_cancelar then
     execute 'create extension if not exists pg_cron';
   end if;
-  if v_cron_limpeza then
+  if v_cron_limpeza and not v_cron_cancelar then
     perform cron.unschedule(jobid) from cron.job where jobname = 'conceive_limpeza_anonimos';
     perform cron.schedule('conceive_limpeza_anonimos', '0 3 1 * *', $cron$
       delete from auth.users u
@@ -1662,7 +1688,7 @@ begin
         and not exists (select 1 from storage.objects o where o.owner = u.id) $cron$);
     raise notice 'CRON: limpeza mensal agendada (dia 1, 03:00 UTC).';
   end if;
-  if v_cron_sla then
+  if v_cron_sla and not v_cron_cancelar then
     perform cron.unschedule(jobid) from cron.job where jobname = 'conceive_resumo_sla';
     perform cron.schedule('conceive_resumo_sla', '0 11 * * 1-5', $cron$ select private.send_sla_digest() $cron$);
     raise notice 'CRON: resumo diário agendado (seg a sex, 08:00 em Fortaleza).';
@@ -1670,3 +1696,4 @@ begin
 end
 $parte_b$;
 
+notify pgrst, 'reload schema';

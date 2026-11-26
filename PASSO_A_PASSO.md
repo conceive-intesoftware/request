@@ -16,7 +16,7 @@ Ordem: primeiro o Supabase (banco), depois o GitHub (site). Não pule a Parte 1,
 
 ### 1.2 Criar as tabelas, regras de segurança e auditoria
 1. No menu lateral: **SQL Editor** → **New query**.
-2. Abra o arquivo **`supabase/Supabase-completo.sql`** deste projeto (é o único arquivo de banco de que você precisa), copie **tudo** e cole no editor. A Parte B dele tem chaves opcionais (primeiro admin, clínicas iniciais, e-mails, agendamentos): deixe como está agora e use-as quando chegar nos passos 1.3, 1.5 e Parte 5.
+2. Abra o arquivo **`supabase/Supabase-completo.sql`** deste projeto (é o único arquivo de banco de que você precisa), copie **tudo** e cole no editor. A Parte B dele tem chaves opcionais (primeiro admin, clínicas iniciais, e-mails, prazos de atraso, agendamentos; incluindo desligar e cancelar): deixe como está agora e use-as quando chegar nos passos 1.3, 1.5 e Parte 5.
 3. Clique em **Run**.
 4. O Supabase pode perguntar sobre "destructive operations" (o script contém `drop trigger/policy if exists` e `revoke`). É esperado: confirme com **Run this query**.
 5. Resultado esperado: `Success. No rows returned`.
