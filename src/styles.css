@@ -441,4 +441,6 @@ input[type="file"] { color: var(--text); font: inherit; max-width: 100%; }
 input[type="file"]::file-selector-button { margin-right: 12px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; transition: border-color .12s, background .12s; }
 input[type="file"]::file-selector-button:hover { border-color: var(--brand-2); background: var(--brand-soft); }
 .card input[type="file"] { display: block; margin-top: 6px; }
+/* O seletor nativo fica oculto (o botão "Escolher arquivos" o aciona); sem isto, a regra acima anulava o atributo hidden. */
+input[type="file"][hidden], .card input[type="file"][hidden] { display: none; }
 .fig { margin: 0; width: 96px; display: flex; flex-direction: column; gap: 4px; } .fig figcaption { font-size: .72rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
