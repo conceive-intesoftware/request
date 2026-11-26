@@ -21,7 +21,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 │ Postgres: RPCs SECURITY DEFINER ──► checam permissão ──► mascaram PII ──►  │
 │           gravam auditoria; RLS; triggers; audit_logs imutável             │
 │ Storage: bucket privado "attachments" (50 MB, só tipos permitidos)         │
-│ Edge Functions: notify (e-mail via Resend) · external-task (Redmine/Pipefy)│
+│ Edge Functions: notify (e-mail via Brevo ou Resend) · external-task (Redmine/Pipefy)│
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 

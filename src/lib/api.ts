@@ -5,6 +5,7 @@ import type {
   ExternalTaskResult,
   ImportResult,
   NotifyLogRow,
+  NotifyStatus,
   ImportRow,
   Metrics,
   PublicList,
@@ -52,6 +53,7 @@ const FRIENDLY: [RegExp, string][] = [
   [/invalid_attachment/i, "Anexo inválido. Envie o arquivo novamente."],
   [/invalid_comment/i, "Comentário vazio ou grande demais (máx. 4000)."],
   [/email_required/i, "Informe o seu e-mail: é para ele que enviamos a confirmação e o link de acompanhamento."],
+  [/notify_not_configured/i, "O banco ainda não está ligado à função de e-mail. Preencha v_notify_url e v_notify_secret na Parte B do SQL e rode o arquivo inteiro."],
   [/invalid_email/i, "E-mail inválido. Confira o endereço digitado."],
   [/invalid_vote/i, "Você já enviou este pedido, então ele já conta como o seu apoio."],
   [/not_rateable/i, "A avaliação só fica disponível depois que a solicitação é concluída."],
@@ -248,6 +250,9 @@ export async function signedAttachmentUrl(path: string): Promise<string> {
 
 // ───────── administração ─────────
 export const adminNotifyLog = (limit = 50) => rpc<NotifyLogRow[]>("admin_notify_log", { p_limit: limit });
+export const adminNotifyStatus = () => rpc<NotifyStatus>("admin_notify_status");
+/** Envia um e-mail de teste (ao próprio Admin, ou a `to`) pela mesma rota dos e-mails reais. */
+export const adminSendTestEmail = (to?: string) => rpc<{ to: string }>("admin_send_test_email", { p_to: to ?? null });
 export const adminListStaff = () => rpc<StaffMember[]>("admin_list_staff");
 export const adminUpsertStaff = (email: string, name: string, role: StaffRole, active: boolean) =>
   rpc<string>("admin_upsert_staff", { p_email: email, p_name: name, p_role: role, p_active: active });

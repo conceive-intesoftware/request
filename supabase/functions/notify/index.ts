@@ -4,18 +4,23 @@
 //
 // Segredos (Edge Functions → Secrets):
 //   WEBHOOK_SECRET   texto longo e aleatório (o mesmo guardado no banco)
-//   RESEND_API_KEY   chave da API do Resend (re_...)
-//   MAIL_FROM        ex.: Conceive <solicitacoes@seudominio.com.br>  (domínio verificado no Resend)
+//   MAIL_PROVIDER    (opcional) "resend" (padrão) ou "brevo"
+//   RESEND_API_KEY   chave da API do Resend (re_...)               — só com MAIL_PROVIDER=resend
+//   BREVO_API_KEY    chave da API do Brevo (xkeysib-...)           — só com MAIL_PROVIDER=brevo
+//   MAIL_FROM        ex.: Conceive <solicitacoes@seudominio.com.br>. Resend: domínio verificado. Brevo: remetente validado
+//                    (pode ser um e-mail simples, como o do Hotmail, validado em Brevo → Senders)
 //   SITE_URL         endereço do site, ex.: https://usuario.github.io/conceive-requests/
 //   TEAM_EMAILS      (opcional) e-mails da equipe, separados por vírgula
 //   REPLY_TO         (opcional) endereço que recebe as respostas dos clientes (cabeçalho Reply-To)
 //
-// Eventos aceitos (JSON): request_created, status_changed, comment_public, client_reply, sla_digest (resumo diário da equipe).
+// Eventos aceitos (JSON): request_created, status_changed, comment_public, client_reply, sla_digest (resumo diário da equipe)
+// e test (e-mail de teste, disparado pelo botão do painel Equipe → E-mails automáticos).
+// Em caso de erro a resposta traz o motivo (campos reason / missing / provider_status / provider_message / hint): o painel os exibe.
 
 declare const Deno: any;
 
 type Env = Record<string, string | undefined>;
-type FetchFn = (input: string, init?: any) => Promise<{ ok: boolean; status: number; json?: () => Promise<any> }>;
+type FetchFn = (input: string, init?: any) => Promise<{ ok: boolean; status: number; json?: () => Promise<any>; text?: () => Promise<string> }>;
 
 const MODULES: Record<string, string> = {
   FINANCEIRO: "Financeiro", AGENDA: "Agenda", PRONTUARIO: "Prontuário", ESTOQUE_FARMACIA: "Estoque/Farmácia",
@@ -45,6 +50,13 @@ function safeEqual(a: string, b: string): boolean {
   const n = Math.max(ea.length, eb.length);
   for (let i = 0; i < n; i++) diff |= (ea[i] ?? 0) ^ (eb[i] ?? 0);
   return diff === 0;
+}
+
+/** "Nome <a@b.com>" ou "a@b.com" → { name?, email } (o Brevo recebe os dois campos separados). */
+function parseFrom(v: string | undefined): { name?: string; email: string } | null {
+  const m = /^\s*(?:"?([^"<>]*?)"?\s*)?<([^<>\s]+)>\s*$/.exec(v ?? "") ?? /^\s*()([^<>\s]+)\s*$/.exec(v ?? "");
+  if (!m || !validEmail(m[2])) return null;
+  return { ...(m[1]?.trim() ? { name: m[1].trim() } : {}), email: m[2].trim() };
 }
 
 const json = (status: number, body: unknown) =>
@@ -185,6 +197,23 @@ function buildMails(p: any, env: Env): Mail[] {
       }
       break;
     }
+    case "test": {
+      if (validEmail(p.test_to)) {
+        const prov = (env.MAIL_PROVIDER ?? "resend").trim().toLowerCase();
+        const remetente = oneLine(env.MAIL_FROM ?? "", 200);
+        mails.push({
+          to: [p.test_to.trim()],
+          subject: "[Conceive] Teste de e-mail",
+          html: layout("Teste de e-mail",
+            `<p>Se você está lendo esta mensagem, o envio automático de e-mails do Conceive está funcionando.</p>
+             <table style="border-collapse:collapse">${row("Provedor", prov)}${row("Remetente", remetente)}</table>
+             <p>Se ela chegou na caixa de spam, marque como “não é spam” para que os e-mails reais cheguem na caixa de entrada.</p>`,
+            { url: `${site}#/admin`, text: "Abrir o painel" }),
+          text: `Se você está lendo esta mensagem, o envio automático de e-mails do Conceive está funcionando.\nProvedor: ${prov}\nRemetente: ${remetente}\n\nSe ela chegou no spam, marque como “não é spam”.\nPainel: ${site}#/admin\n`,
+        });
+      }
+      break;
+    }
     case "sla_digest": {
       if (team.length) {
         const items = (Array.isArray(p.items) ? p.items : []).slice(0, 30);
@@ -207,39 +236,95 @@ function buildMails(p: any, env: Env): Mail[] {
   return mails;
 }
 
-const EVENTS = ["request_created", "status_changed", "comment_public", "client_reply", "sla_digest"];
+const EVENTS = ["request_created", "status_changed", "comment_public", "client_reply", "sla_digest", "test"];
+
+/** Mensagem curta de erro devolvida pelo provedor (sem a chave, caso ela venha repetida). */
+async function providerMessage(r: { json?: () => Promise<any>; text?: () => Promise<string> }, secret: string): Promise<string> {
+  let msg = "";
+  try {
+    if (r.json) {
+      const j = await r.json();
+      const m = j?.message ?? j?.error?.message ?? j?.error ?? j?.name ?? (typeof j === "string" ? j : "");
+      msg = typeof m === "string" ? m : JSON.stringify(m ?? "");
+    } else if (r.text) msg = await r.text();
+  } catch { /* corpo ilegível */ }
+  msg = oneLine(msg, 200);
+  return secret ? msg.split(secret).join("***") : msg;
+}
+
+/** Dica em português para os erros mais comuns de cada provedor. */
+function hintFor(provider: string, status: number, message: string): string {
+  const m = message.toLowerCase();
+  if (status === 0) return "a função não conseguiu falar com o provedor (rede)";
+  if (status === 429) return "limite de envios do provedor atingido (por segundo ou por dia)";
+  if (provider === "brevo") {
+    if (m.includes("ip") && (m.includes("unrecognised") || m.includes("unrecognized") || m.includes("authori"))) return "o Brevo bloqueou o IP do Supabase: em Brevo → Security → Authorized IPs, desative o bloqueio de IPs desconhecidos";
+    if (status === 401) return "chave do Brevo inválida/copiada incompleta, ou bloqueio de IPs ativo no Brevo (Security → Authorized IPs)";
+    if (status === 403) return "conta do Brevo ainda não liberada para envio, ou chave sem permissão";
+    if (m.includes("sender")) return "o remetente (MAIL_FROM) não está validado no Brevo (Senders, domains & dedicated IPs → Senders)";
+  } else {
+    if (status === 401 || status === 403) return "chave do Resend inválida, ou domínio do remetente (MAIL_FROM) não verificado no Resend";
+    if (status === 422 || status === 400) return "dados recusados pelo Resend: confira se MAIL_FROM usa o domínio verificado";
+  }
+  return "veja a mensagem do provedor";
+}
 
 export async function handle(req: Request, env: Env, fetchFn: FetchFn): Promise<Response> {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
 
   const given = req.headers.get("x-webhook-secret") ?? "";
-  if (!env.WEBHOOK_SECRET || !given || !safeEqual(given, env.WEBHOOK_SECRET)) return json(401, { error: "unauthorized" });
+  if (!env.WEBHOOK_SECRET) return json(401, { error: "unauthorized", reason: "o Secret WEBHOOK_SECRET não está cadastrado na função" });
+  if (!given || !safeEqual(given, env.WEBHOOK_SECRET)) return json(401, { error: "unauthorized", reason: "o segredo do banco (notify_secret) é diferente do WEBHOOK_SECRET da função" });
 
   let payload: any;
   try { payload = await req.json(); } catch { return json(400, { error: "invalid_json" }); }
   if (!payload || typeof payload !== "object" || !EVENTS.includes(payload.event)) return json(400, { error: "invalid_event" });
   if (typeof payload.protocol !== "string" || typeof payload.title !== "string") return json(400, { error: "invalid_payload" });
 
-  if (!env.RESEND_API_KEY || !env.MAIL_FROM || !env.SITE_URL) return json(500, { error: "not_configured" });
+  const provider = (env.MAIL_PROVIDER ?? "resend").trim().toLowerCase();
+  if (provider !== "resend" && provider !== "brevo") return json(500, { error: "not_configured", missing: ["MAIL_PROVIDER (use resend ou brevo)"] });
+  const apiKey = provider === "brevo" ? env.BREVO_API_KEY : env.RESEND_API_KEY;
+  const from = parseFrom(env.MAIL_FROM);
+  const missing: string[] = [];
+  if (!apiKey) missing.push(provider === "brevo" ? "BREVO_API_KEY" : "RESEND_API_KEY");
+  if (!from) missing.push(env.MAIL_FROM ? "MAIL_FROM (formato: Nome <email@dominio.com>)" : "MAIL_FROM");
+  if (!env.SITE_URL) missing.push("SITE_URL");
+  if (missing.length || !apiKey || !from) return json(500, { error: "not_configured", missing });
 
   const mails = buildMails(payload, env);
+  if (payload.event === "test" && mails.length === 0) return json(400, { error: "invalid_test_recipient" });
   const replyTo = validEmail(env.REPLY_TO) ? env.REPLY_TO.trim() : undefined;
   const eventId = typeof payload.event_id === "string" && EVENT_ID_RE.test(payload.event_id) ? payload.event_id : null;
   let sent = 0;
   for (const [i, m] of mails.entries()) {
-    let ok = false;
+    let failure: { provider_status: number; provider_message: string } | null = null;
     try {
-      const headers: Record<string, string> = { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" };
-      // Mesmo evento reenviado (nova tentativa) não gera e-mail duplicado: o Resend ignora a repetição por 24 h.
-      if (eventId) headers["idempotency-key"] = `conceive-${eventId}-${i}`;
-      const r = await fetchFn("https://api.resend.com/emails", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(replyTo ? { reply_to: replyTo } : {}) }),
-      });
-      ok = r.ok;
-    } catch { ok = false; }
-    if (!ok) return json(502, { error: "mail_failed", sent });
+      let r;
+      if (provider === "brevo") {
+        // Brevo não tem Idempotency-Key: uma nova tentativa do mesmo evento pode duplicar o e-mail.
+        r = await fetchFn("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: { "api-key": apiKey, "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            sender: from, to: m.to.map((email) => ({ email })), subject: m.subject, htmlContent: m.html, textContent: m.text,
+            ...(replyTo ? { replyTo: { email: replyTo } } : {}),
+          }),
+        });
+      } else {
+        const headers: Record<string, string> = { authorization: `Bearer ${apiKey}`, "content-type": "application/json" };
+        // Mesmo evento reenviado (nova tentativa) não gera e-mail duplicado: o Resend ignora a repetição por 24 h.
+        if (eventId) headers["idempotency-key"] = `conceive-${eventId}-${i}`;
+        r = await fetchFn("https://api.resend.com/emails", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(replyTo ? { reply_to: replyTo } : {}) }),
+        });
+      }
+      if (!r.ok) failure = { provider_status: r.status, provider_message: await providerMessage(r, apiKey) };
+    } catch {
+      failure = { provider_status: 0, provider_message: "falha de rede ao chamar o provedor" };
+    }
+    if (failure) return json(502, { error: "mail_failed", sent, provider, ...failure, hint: hintFor(provider, failure.provider_status, failure.provider_message) });
     sent++;
   }
   return json(200, { sent });

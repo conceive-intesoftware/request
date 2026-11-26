@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../../lib/api";
-import type { ClinicAdmin, NotifyLogRow, StaffMember, StaffRole } from "../../lib/types";
+import type { ClinicAdmin, NotifyLogRow, NotifyStatus, StaffMember, StaffRole } from "../../lib/types";
 import { STAFF_ROLES, labelOf } from "../../lib/labels";
 import { errMsg, fmtDateTime } from "../../lib/format";
 import { Banner, EmptyState, Field, Modal, Select, Spinner } from "../../components/ui";
@@ -313,35 +313,86 @@ function EditUser({ m, isMe, globalOff, onClose, onChanged, onError }: {
 
 const EVENT_LABEL: Record<string, string> = {
   request_created: "Nova solicitação", status_changed: "Mudança de status", comment_public: "Resposta pública", client_reply: "Resposta do cliente",
+  sla_digest: "Resumo de atrasos", test: "E-mail de teste",
 };
 
-/** Últimos envios de e-mail e se deram certo. Ajuda a achar falhas de configuração do Resend/notify. */
+/** Transforma a resposta da função `notify` (JSON) em uma frase com o motivo e o que fazer. */
+export function explainReply(status: number, body: string | null): string {
+  let j: Record<string, unknown> | null = null;
+  try { j = body ? JSON.parse(body) as Record<string, unknown> : null; } catch { j = null; }
+  const parts: string[] = [];
+  if (j && typeof j.reason === "string") parts.push(j.reason);
+  if (j && Array.isArray(j.missing) && j.missing.length) parts.push(`faltam/estão errados os Secrets: ${j.missing.join(", ")}`);
+  if (j && typeof j.hint === "string") parts.push(j.hint);
+  if (j && typeof j.provider_message === "string" && j.provider_message) parts.push(`mensagem do provedor: “${j.provider_message}”`);
+  if (j && j.error === "invalid_test_recipient") parts.push("destinatário do teste inválido");
+  if (parts.length) return parts.join(" · ");
+  if (status === 401 && body && /jwt|authorization|bearer/i.test(body)) return "o Supabase barrou a chamada antes da função: desligue “Enforce JWT verification” na função notify";
+  if (status === 401) return "segredo diferente entre o banco e a função (WEBHOOK_SECRET), ou “Enforce JWT verification” ligado na função";
+  if (status === 404) return "a função notify não existe com esse nome, ou a URL gravada no banco está errada";
+  if (status >= 500) return "erro na função notify: veja os logs dela no Supabase (Edge Functions → notify → Logs)";
+  return "veja os logs da função notify no Supabase";
+}
+
 function MailLog() {
   const [rows, setRows] = useState<NotifyLogRow[] | null>(null);
+  const [status, setStatus] = useState<NotifyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
     setError(null);
-    try { setRows(await api.adminNotifyLog(30)); } catch (e) { setError(errMsg(e)); }
+    try {
+      const [r, st] = await Promise.all([api.adminNotifyLog(30), api.adminNotifyStatus()]);
+      setRows(r); setStatus(st);
+    } catch (e) { setError(errMsg(e)); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+
+  async function sendTest() {
+    setBusy(true); setError(null); setInfo(null);
+    try {
+      const r = await api.adminSendTestEmail();
+      setInfo(`Teste enviado para ${r.to}. Aguarde alguns segundos: o resultado aparece na tabela abaixo.`);
+      for (const ms of [4000, 10000, 20000]) setTimeout(() => void load(), ms);
+    } catch (e) { setError(errMsg(e)); } finally { setBusy(false); }
+  }
+
   const state = (r: NotifyLogRow) =>
     r.outcome === "ERRO" ? { t: "falhou", c: "tag", why: r.detail ?? "erro ao chamar a função" }
-    : r.http_status === null ? { t: "enviado à função", c: "tag outline", why: "ainda sem retorno (ou o pg_net já descartou o histórico)" }
-    : r.http_status >= 200 && r.http_status < 300 ? { t: "ok", c: "tag a-CREATE", why: "" }
-    : { t: `falhou (HTTP ${r.http_status})`, c: "tag", why: r.http_status === 401 ? "segredo diferente entre o banco e a função (WEBHOOK_SECRET)" : r.http_status === 500 ? "faltam segredos na função (RESEND_API_KEY, MAIL_FROM ou SITE_URL) ou o Resend recusou" : "veja os logs da função notify no Supabase" };
+    : r.http_status === null ? { t: "enviado à função", c: "tag outline", why: r.http_error ?? "ainda sem retorno (ou o pg_net já descartou o histórico)" }
+    : r.http_status >= 200 && r.http_status < 300 ? { t: "ok", c: "tag a-CREATE", why: r.event === "test" ? "o provedor aceitou o envio: confira a caixa de entrada e o spam" : "" }
+    : { t: `falhou (HTTP ${r.http_status})`, c: "tag", why: explainReply(r.http_status, r.http_body) };
+
+  const checks = status ? [
+    { ok: status.pg_net, t: "Extensão pg_net ativada", fix: "Database → Extensions → ative pg_net." },
+    { ok: status.url_set && status.secret_set, t: "Banco ligado à função (URL e segredo gravados)", fix: "Preencha v_notify_url e v_notify_secret na Parte B do SQL e rode o arquivo inteiro." },
+  ] : [];
+  const linked = !!status && status.pg_net && status.url_set && status.secret_set;
+
   return (
     <section className="card stack" aria-labelledby="maillog">
       <div className="row between">
         <div><h2 id="maillog">E-mails automáticos</h2>
-          <p className="muted">Últimos 30 envios. Se estiver vazio, os e-mails não estão configurados (veja a Parte 5 do guia).</p></div>
-        <button className="btn" onClick={() => void load()}>Atualizar</button>
+          <p className="muted">Últimos 30 envios. Use o teste para conferir a configuração de ponta a ponta.</p></div>
+        <div className="row">
+          <button className="btn" disabled={busy || !linked} onClick={() => void sendTest()} title={linked ? "" : "Ligue o banco à função primeiro"}>{busy ? "Enviando…" : "Enviar e-mail de teste"}</button>
+          <button className="btn" onClick={() => void load()}>Atualizar</button>
+        </div>
       </div>
       {error && <Banner>{error}</Banner>}
+      {info && <Banner kind="ok">{info}</Banner>}
+      {status && (
+        <ul className="checklist" aria-label="Situação da configuração">
+          {checks.map((c) => <li key={c.t}>{c.ok ? "✓" : "✗"} {c.t}{!c.ok && <span className="muted"> — {c.fix}</span>}</li>)}
+          {status.url && <li className="muted small">Endereço da função: <span className="mono">{status.url}</span></li>}
+        </ul>
+      )}
       {!rows && !error && <Spinner />}
-      {rows && rows.length === 0 && <p className="muted">Nenhum envio registrado.</p>}
+      {rows && rows.length === 0 && <p className="muted">Nenhum envio registrado. {linked ? "Clique em “Enviar e-mail de teste”." : "O banco ainda não está ligado à função de e-mail (veja a lista acima)."}</p>}
       {rows && rows.length > 0 && (
         <div className="table-wrap"><table className="table static">
-          <thead><tr><th>Quando</th><th>Tipo</th><th>Protocolo</th><th>Resultado</th><th>Motivo provável</th></tr></thead>
+          <thead><tr><th>Quando</th><th>Tipo</th><th>Protocolo</th><th>Resultado</th><th>Motivo / o que fazer</th></tr></thead>
           <tbody>{rows.map((r) => { const s = state(r); return (
             <tr key={r.id}><td className="nowrap">{fmtDateTime(r.created_at)}</td><td>{EVENT_LABEL[r.event] ?? r.event}</td><td className="mono small">{r.protocol ?? "—"}</td>
               <td><span className={s.c}>{s.t}</span></td><td className="small">{s.why}</td></tr>); })}</tbody>

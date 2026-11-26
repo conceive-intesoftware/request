@@ -142,6 +142,14 @@ export interface NotifyLogRow {
   detail: string | null;
   http_status: number | null;
   http_error: string | null;
+  http_body: string | null;
+}
+
+export interface NotifyStatus {
+  pg_net: boolean;
+  url_set: boolean;
+  url: string | null;
+  secret_set: boolean;
 }
 
 export interface StaffMember {

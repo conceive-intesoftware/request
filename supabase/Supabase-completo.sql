@@ -1470,15 +1470,47 @@ begin
     execute $q$
       select coalesce(jsonb_agg(x order by x.id desc), '[]'::jsonb) from (
         select l.id, l.created_at, l.event, l.protocol, l.outcome, l.detail,
-               r.status_code as http_status, left(r.error_msg, 200) as http_error
+               r.status_code as http_status, left(r.error_msg, 200) as http_error, left(r.content::text, 400) as http_body
         from private.notify_log l left join net._http_response r on r.id = l.net_id
         order by l.id desc limit $1) x $q$ into v using least(greatest(coalesce(p_limit, 50), 1), 200);
   else
     select coalesce(jsonb_agg(x order by x.id desc), '[]'::jsonb) into v from (
-      select l.id, l.created_at, l.event, l.protocol, l.outcome, l.detail, null::int as http_status, null::text as http_error
+      select l.id, l.created_at, l.event, l.protocol, l.outcome, l.detail, null::int as http_status, null::text as http_error, null::text as http_body
       from private.notify_log l order by l.id desc limit least(greatest(coalesce(p_limit, 50), 1), 200)) x;
   end if;
   return v;
+end $$;
+
+-- Situação da ligação com o e-mail (o painel mostra um "checklist"; nunca devolve o segredo).
+create or replace function public.admin_notify_status()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_url text; v_secret text;
+begin
+  perform private.require('user:manage');
+  select s.value into v_url    from private.app_settings s where s.key = 'notify_url';
+  select s.value into v_secret from private.app_settings s where s.key = 'notify_secret';
+  return jsonb_build_object(
+    'pg_net',     to_regclass('net._http_response') is not null,
+    'url_set',    coalesce(v_url, '') <> '',
+    'url',        nullif(v_url, ''),
+    'secret_set', coalesce(v_secret, '') <> '');
+end $$;
+
+-- Botão "Enviar e-mail de teste" do painel: manda um e-mail de teste (para o próprio Admin, ou para p_to) pela mesma
+-- rota dos e-mails reais. O resultado aparece em "E-mails automáticos" alguns segundos depois.
+create or replace function public.admin_send_test_email(p_to text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_to text; v_url text; v_secret text;
+begin
+  perform private.require('user:manage');
+  select s.value into v_url    from private.app_settings s where s.key = 'notify_url';
+  select s.value into v_secret from private.app_settings s where s.key = 'notify_secret';
+  if coalesce(v_url, '') = '' or coalesce(v_secret, '') = '' then raise exception 'notify_not_configured'; end if;
+  v_to := nullif(lower(trim(coalesce(p_to, (select p.email from public.profiles p where p.id = (select auth.uid()))))), '');
+  if v_to is null or length(v_to) > 160 or v_to !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'invalid_email'; end if;
+  perform private.notify_event(jsonb_build_object('event', 'test', 'protocol', 'TESTE',
+            'title', 'Teste de e-mail do Conceive', 'test_to', v_to));
+  return jsonb_build_object('to', v_to);
 end $$;
 
 -- O usuário precisa existir em Authentication → Users (convite/criação no painel do Supabase).
@@ -1572,6 +1604,8 @@ grant execute on function
   public.admin_rename_unit(uuid, text),
   public.admin_delete_unit(uuid),
   public.admin_notify_log(int),
+  public.admin_notify_status(),
+  public.admin_send_test_email(text),
   public.admin_upsert_staff(text, text, public.app_role, boolean),
   public.admin_upsert_clinic(uuid, text, boolean),
   public.admin_add_unit(uuid, text),
@@ -1635,7 +1669,13 @@ begin
     raise notice 'CLÍNICAS: cadastradas.';
   end if;
 
+  if (v_notify_url is null) <> (v_notify_secret is null) then
+    raise exception 'Preencha v_notify_url E v_notify_secret juntos (um deles está vazio).';
+  end if;
   if v_notify_url is not null and v_notify_secret is not null then
+    if v_notify_url !~ '^https://[^\s]+/functions/v1/notify$' then
+      raise exception 'v_notify_url deve ter o formato https://SEU-PROJETO.supabase.co/functions/v1/notify';
+    end if;
     if length(v_notify_secret) < 32 then
       raise exception 'v_notify_secret precisa ter 32+ caracteres.';
     end if;
@@ -1667,6 +1707,13 @@ begin
   if v_cron_cancelar and exists (select 1 from pg_extension where extname = 'pg_cron') then
     perform cron.unschedule(jobid) from cron.job where jobname in ('conceive_limpeza_anonimos', 'conceive_resumo_sla');
     raise notice 'CRON: agendamentos cancelados.';
+  end if;
+
+  -- Resumo no fim: mostra se os e-mails ficaram ligados (assim não depende de adivinhar).
+  if exists (select 1 from private.app_settings where key = 'notify_url') and exists (select 1 from private.app_settings where key = 'notify_secret') then
+    raise notice 'E-MAILS: LIGADOS no banco (url e segredo gravados). Falta só a função notify e seus Secrets; teste em Equipe → E-mails automáticos → Enviar e-mail de teste.';
+  else
+    raise notice 'E-MAILS: DESLIGADOS no banco. Preencha v_notify_url e v_notify_secret nesta Parte B e rode o arquivo inteiro de novo.';
   end if;
 
   if v_limpar_agora then

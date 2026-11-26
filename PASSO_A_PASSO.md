@@ -140,19 +140,64 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 
 > **Se você já tinha a versão 1 no ar:** rode de novo o arquivo `supabase/Supabase-completo.sql` inteiro no SQL Editor (ele é seguro para repetir e não apaga dados) e publique o site novamente.
 
-### 5.1 E-mails automáticos (Resend + função `notify`)
-> **O e-mail agora é obrigatório no formulário.** É para ele que vai a *confirmação de recebimento* (mensagem formal, com protocolo, resumo do pedido e o link de acompanhamento). Por isso, configure esta etapa antes de divulgar o formulário: sem ela o cliente não recebe o link por e-mail (ele continua aparecendo na tela de confirmação).
+### 5.1 E-mails automáticos (função `notify` + Brevo ou Resend)
 
-1. Crie conta em resend.com, **verifique o seu domínio** (Domains) e crie uma **API key**.
-2. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `notify`, cole o conteúdo de `supabase/functions/notify/index.ts`. **Desligue "Enforce JWT verification"** (o banco chama a função sem login; quem protege é o segredo).
-3. Em **Edge Functions → Secrets**, cadastre: `WEBHOOK_SECRET` (frase longa e aleatória), `RESEND_API_KEY`, `MAIL_FROM` (ex.: `Conceive <contato@seudominio.com.br>`), `TEAM_EMAILS` (e-mails da equipe, separados por vírgula), `SITE_URL` (endereço do site no GitHub Pages) e, opcionalmente, `REPLY_TO` (endereço que recebe as respostas dos clientes; com ele, o rodapé passa a dizer “basta responder este e-mail”).
-4. Em **Database → Extensions**, confirme que `pg_net` está ligada.
-5. No `supabase/Supabase-completo.sql`, Parte B, preencha `v_notify_url` e `v_notify_secret` (o mesmo segredo do passo 3) e rode o arquivo de novo.
-6. Teste: envie uma solicitação com e-mail. O cliente recebe o link; a equipe recebe o aviso, com o botão **Abrir no painel** (abre direto a solicitação; se a pessoa não estiver logada, entra e é levada até ela).
-7. Ao marcar a solicitação como **Concluído**, o cliente recebe um e-mail pedindo a avaliação (1 a 5 estrelas) na página de acompanhamento.
-8. Cada evento carrega um identificador que vira o cabeçalho `Idempotency-Key` no Resend: se o mesmo evento for reenviado, o Resend ignora a repetição em até 24 h, sem e-mail duplicado.
+> **O e-mail é obrigatório no formulário.** É para ele que vai a confirmação de recebimento (com o link de acompanhamento). Configure esta etapa antes de divulgar o formulário.
 
-> **Atualizando uma instalação existente:** republique a função `notify` (conteúdo novo de `index.ts`), rode o `Supabase-completo.sql` inteiro de novo e publique o site (o link direto usa o painel novo).
+**Como funciona:** ao criar uma solicitação, mudar o status ou comentar, o **banco** chama a **função `notify`** (Edge Function), que monta o e-mail e o entrega ao **provedor** (Brevo ou Resend). Três peças precisam estar certas: (A) o provedor, (B) a função com seus Secrets, (C) a ligação do banco. O painel tem um botão que testa tudo de uma vez (passo 7).
+
+**Escolha o provedor**
+
+| | Brevo | Resend |
+|---|---|---|
+| Plano gratuito | 300 e-mails/dia | 3.000/mês, 100/dia |
+| Precisa de domínio próprio? | Não: dá para validar um e-mail simples (ex.: Hotmail) como remetente | **Sim**, domínio verificado (sem ele só envia para você mesmo) |
+| Observação | E-mail de provedor gratuito como remetente tende a ir para o spam | Melhor entrega, com domínio próprio |
+
+**A. Provedor**
+- **Brevo:** crie a conta em brevo.com → *Senders, domains & dedicated IPs → Senders → Add a sender* (e-mail que aparece como remetente; confirme pelo código que chega nele) → *SMTP & API → API keys → Generate* (copie a chave `xkeysib-...`).
+  - ⚠ **Bloqueio de IP (causa comum de falha):** em *Security → Authorized IPs*, se estiver ativado “Block unknown IP addresses”, o Brevo recusa a função (o Supabase não tem IP fixo). **Desative o bloqueio** (ou escolha a autorização automática).
+  - Se o Brevo pedir ativação/validação da conta de envio, conclua antes de testar.
+- **Resend:** crie a conta, adicione o domínio em *Domains*, cadastre no DNS os registros SPF/DKIM que ele mostrar, espere *Verified* e gere a chave em *API Keys* (`re_...`).
+
+**B. Função `notify`**
+1. *Edge Functions → Deploy a new function → Via Editor*, nome exato `notify`, cole todo o `supabase/functions/notify/index.ts` e clique em *Deploy*.
+2. Nas configurações da função, **desligue “Enforce JWT verification”** (quem chama é o banco, sem login; a proteção é o segredo).
+3. *Edge Functions → Secrets*: cadastre (nomes exatos, sem espaços sobrando nos valores):
+
+| Secret | Valor |
+|---|---|
+| `WEBHOOK_SECRET` | senha inventada por você, 32+ caracteres, só letras e números (a mesma do passo C) |
+| `MAIL_PROVIDER` | `brevo` ou `resend` (sem ele, vale `resend`) |
+| `BREVO_API_KEY` ou `RESEND_API_KEY` | a chave do provedor escolhido |
+| `MAIL_FROM` | `Conceive <remetente@dominio.com>` (Brevo: o e-mail validado; Resend: do domínio verificado) |
+| `SITE_URL` | `https://USUARIO.github.io/conceive-requests/` (com a barra no final) |
+| `TEAM_EMAILS` | e-mails da equipe, separados por vírgula |
+| `REPLY_TO` (opcional) | e-mail que recebe as respostas dos clientes |
+
+**C. Ligar o banco à função**
+1. *Database → Extensions*: confirme `pg_net` ativada.
+2. No `Supabase-completo.sql`, Parte B, preencha **os dois** campos, entre aspas simples:
+   `v_notify_url := 'https://SEU-PROJETO.supabase.co/functions/v1/notify'` (a *Project URL* está em *Project Settings → API*) e `v_notify_secret := 'a mesma senha do WEBHOOK_SECRET'`.
+3. Rode o arquivo **inteiro**. Ao final, em *Messages*, deve aparecer **`E-MAILS: LIGADOS no banco`**. Se aparecer `DESLIGADOS`, os campos ficaram vazios. O SQL recusa URL fora do formato e segredo com menos de 32 caracteres.
+
+**7. Testar e diagnosticar (no painel)**
+1. Entre como Admin → **Equipe → E-mails automáticos**.
+2. A lista no topo mostra se o banco está ligado (✓/✗) e o que fazer se não estiver.
+3. Clique em **Enviar e-mail de teste**: chega um e-mail ao endereço do seu usuário. Em até ~20 segundos a linha “E-mail de teste” aparece na tabela com o resultado e, se falhar, **o motivo e o que corrigir** (segredo diferente, Secret que falta, chave inválida, remetente não validado, IP bloqueado no Brevo, domínio não verificado no Resend…).
+4. Com o teste OK, envie uma solicitação real com um e-mail seu. O cliente recebe a confirmação; a equipe recebe o aviso com o botão **Abrir no painel**.
+
+| Resultado na tabela | Causa e correção |
+|---|---|
+| Nenhuma linha e a lista mostra ✗ | O banco não está ligado: refaça o passo C. |
+| HTTP 401 “segredo diferente” | `notify_secret` do banco ≠ `WEBHOOK_SECRET` da função. Deixe idênticos e rode o SQL de novo. |
+| HTTP 401 “Enforce JWT verification” | A função exige login: desligue essa opção (passo B.2). |
+| HTTP 404 | A função não se chama `notify` ou a URL do banco está errada. |
+| HTTP 500 “faltam os Secrets: …” | Cadastre os Secrets listados (e republique a função se os criou depois). |
+| HTTP 502 com mensagem do provedor | Siga a dica exibida (chave, remetente, IP no Brevo, domínio no Resend, limite diário). |
+| “ok” mas o e-mail não chega | Veja o spam; o log do provedor (Brevo: *Transactional → Logs*; Resend: *Emails*) diz se foi entregue ou barrado. |
+
+**Dados de envio:** o Resend recebe um `Idempotency-Key` por evento (um reenvio não duplica); o Brevo não tem esse recurso.
 
 ### 5.2 Criar tarefa no Redmine/Pipefy (função `external-task`)
 1. Publique a função `external-task` (conteúdo de `supabase/functions/external-task/index.ts`) com **"Enforce JWT verification" LIGADO**.

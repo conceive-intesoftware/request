@@ -444,3 +444,5 @@ input[type="file"]::file-selector-button:hover { border-color: var(--brand-2); b
 /* O seletor nativo fica oculto (o botão "Escolher arquivos" o aciona); sem isto, a regra acima anulava o atributo hidden. */
 input[type="file"][hidden], .card input[type="file"][hidden] { display: none; }
 .fig { margin: 0; width: 96px; display: flex; flex-direction: column; gap: 4px; } .fig figcaption { font-size: .72rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: .92rem; }

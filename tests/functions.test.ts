@@ -67,7 +67,47 @@ await test("configuração incompleta → 500 not_configured", async () => {
   const { f } = fakeFetch(() => ({}));
   const r = await notify(post(created), { ...ENV, RESEND_API_KEY: undefined }, f);
   assert.equal(r.status, 500);
-  assert.deepEqual(await r.json(), { error: "not_configured" });
+  assert.deepEqual(await r.json(), { error: "not_configured", missing: ["RESEND_API_KEY"] });
+});
+await test("erros explicam o motivo: segredo ausente/diferente, o que falta na configuração", async () => {
+  const { f } = fakeFetch(() => ({}));
+  const a = await notify(post(created, { "x-webhook-secret": "errado" }), ENV, f);
+  assert.equal(a.status, 401);
+  assert.match((await a.json()).reason, /diferente/);
+  const b = await notify(post(created), { ...ENV, WEBHOOK_SECRET: undefined }, f);
+  assert.match((await b.json()).reason, /WEBHOOK_SECRET não está cadastrado/);
+  const c = await notify(post(created), { ...ENV, MAIL_PROVIDER: "brevo", MAIL_FROM: "lixo", SITE_URL: undefined }, f);
+  assert.deepEqual((await c.json()).missing, ["BREVO_API_KEY", "MAIL_FROM (formato: Nome <email@dominio.com>)", "SITE_URL"]);
+});
+await test("falha do provedor devolve status, mensagem e dica (sem vazar a chave)", async () => {
+  const brevo = { ...ENV, MAIL_PROVIDER: "brevo", BREVO_API_KEY: "xkeysib-SEGREDO", MAIL_FROM: "Conceive <a@hotmail.com>" };
+  const ip = fakeFetch(() => ({ status: 401, body: { code: "unauthorized", message: "We have detected you are using an unrecognised IP address 1.2.3.4. xkeysib-SEGREDO" } }));
+  const r1 = await notify(post(created), brevo, ip.f);
+  const b1 = await r1.json();
+  assert.equal(r1.status, 502);
+  assert.equal(b1.provider, "brevo"); assert.equal(b1.provider_status, 401);
+  assert.match(b1.hint, /bloqueou o IP/);
+  assert.ok(!JSON.stringify(b1).includes("xkeysib-SEGREDO"), "chave redigida");
+  const snd = fakeFetch(() => ({ status: 400, body: { message: "Sender is invalid / not validated" } }));
+  assert.match((await (await notify(post(created), brevo, snd.f)).json()).hint, /remetente/);
+  const rs = fakeFetch(() => ({ status: 403, body: { message: "The domain is not verified" } }));
+  const b3 = await (await notify(post(created), ENV, rs.f)).json();
+  assert.equal(b3.provider, "resend"); assert.match(b3.hint, /Resend/);
+  const net = await (await notify(post(created), ENV, (async () => { throw new Error("rede"); }) as any)).json();
+  assert.equal(net.provider_status, 0);
+});
+await test("evento test: envia ao endereço informado; sem destinatário válido → 400", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  const ev = { event: "test", protocol: "TESTE", title: "Teste de e-mail do Conceive", test_to: "eu@exemplo.com" };
+  const r = await notify(post(ev), ENV, f);
+  assert.deepEqual(await r.json(), { sent: 1 });
+  const m = sentBodies(calls)[0];
+  assert.deepEqual(m.to, ["eu@exemplo.com"]);
+  assert.match(m.subject, /Teste de e-mail/);
+  assert.ok(m.html.includes("funcionando") && m.html.includes("resend"));
+  const bad = await notify(post({ ...ev, test_to: "xx" }), ENV, f);
+  assert.equal(bad.status, 400);
+  assert.equal(calls.length, 1);
 });
 await test("request_created: confirmação ao cliente (com link) + aviso à equipe (sem dados pessoais)", async () => {
   const { f, calls } = fakeFetch(() => ({ body: { id: "1" } }));
@@ -207,6 +247,36 @@ await test("Idempotency-Key estável por evento e por e-mail; ausente sem event_
   assert.equal(h[1], "conceive-9b2d6f1e-1111-4222-8333-444455556666-1");
   assert.deepEqual(h.slice(0, 2), h.slice(2, 4), "repetição do mesmo evento usa as mesmas chaves");
   assert.equal(h[4], undefined);
+});
+await test("Brevo: chamada à API v3, chave no cabeçalho api-key, remetente separado, Reply-To", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  const env = { ...ENV, MAIL_PROVIDER: "brevo", BREVO_API_KEY: "xkeysib-SEGREDO", RESEND_API_KEY: undefined, MAIL_FROM: "Conceive <fulano@hotmail.com>", REPLY_TO: "fulano@hotmail.com" };
+  const r = await notify(post(created), env, f);
+  assert.deepEqual(await r.json(), { sent: 2 });
+  assert.equal(calls[0].url, "https://api.brevo.com/v3/smtp/email");
+  assert.equal(calls[0].init.headers["api-key"], "xkeysib-SEGREDO");
+  assert.ok(!("authorization" in calls[0].init.headers));
+  const b = JSON.parse(calls[0].init.body);
+  assert.deepEqual(b.sender, { name: "Conceive", email: "fulano@hotmail.com" });
+  assert.deepEqual(b.to, [{ email: "sarah@clinica.com" }]);
+  assert.deepEqual(b.replyTo, { email: "fulano@hotmail.com" });
+  assert.ok(b.htmlContent.includes("CON-2026-0001") && b.textContent.includes("CON-2026-0001") && b.subject.includes("CON-2026-0001"));
+  assert.deepEqual(JSON.parse(calls[1].init.body).to, [{ email: "po@x.com" }, { email: "dev@x.com" }]);
+});
+await test("Brevo: remetente simples (sem nome), sem chave → 500, erro → 502 sem vazar a chave", async () => {
+  const base = { ...ENV, MAIL_PROVIDER: "brevo", BREVO_API_KEY: "xkeysib-SEGREDO", RESEND_API_KEY: undefined };
+  const a = fakeFetch(() => ({}));
+  await notify(post(created), { ...base, MAIL_FROM: "fulano@hotmail.com" }, a.f);
+  assert.deepEqual(JSON.parse(a.calls[0].init.body).sender, { email: "fulano@hotmail.com" });
+  const c = fakeFetch(() => ({}));
+  assert.equal((await notify(post(created), { ...base, BREVO_API_KEY: undefined }, c.f)).status, 500);
+  assert.equal((await notify(post(created), { ...base, MAIL_FROM: "lixo" }, c.f)).status, 500);
+  assert.equal((await notify(post(created), { ...ENV, MAIL_PROVIDER: "outro" }, c.f)).status, 500);
+  assert.equal(c.calls.length, 0);
+  const e = fakeFetch(() => ({ status: 401, body: { message: "Key not found" } }));
+  const r = await notify(post(created), base, e.f);
+  assert.equal(r.status, 502);
+  assert.ok(!(await r.text()).includes("xkeysib-SEGREDO"));
 });
 await test("sla_digest sem equipe cadastrada não envia nada", async () => {
   const { f, calls } = fakeFetch(() => ({}));

@@ -733,6 +733,35 @@ create or replace function net.http_post(url text, body jsonb default '{}'::json
 returns bigint language sql as $$ insert into net.calls (url, body, headers) values (url, body, headers) returning id $$;
 delete from private.app_settings;
 
+-- ───────── 24c. diagnóstico e e-mail de teste ─────────
+do $t$
+declare j jsonb; n int;
+begin
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  j := public.admin_notify_status();
+  perform tests.ok((j ->> 'url_set') = 'false' and (j ->> 'secret_set') = 'false' and (j ? 'pg_net'), 'status: sem configuração aparece como desligado');
+  perform tests.fails($$select public.admin_send_test_email()$$, 'notify_not_configured', 'teste de e-mail exige o banco ligado');
+  perform tests.logout();
+
+  insert into private.app_settings (key, value) values ('notify_url', 'https://x.supabase.co/functions/v1/notify'), ('notify_secret', 'segredo-teste-com-mais-de-trinta-caracteres');
+  select count(*) into n from net.calls;
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  j := public.admin_notify_status();
+  perform tests.ok((j ->> 'url_set') = 'true' and (j ->> 'secret_set') = 'true' and not (j::text ~ 'segredo-teste'), 'status: ligado e o segredo nunca é devolvido');
+  j := public.admin_send_test_email();
+  perform tests.ok(j ->> 'to' is not null, 'teste vai para o e-mail do próprio Admin');
+  perform tests.fails($$select public.admin_send_test_email('isso não é email')$$, 'invalid_email', 'e-mail de teste inválido é recusado');
+  perform tests.logout();
+  perform tests.ok((select count(*) = n + 1 from net.calls) and (select body ->> 'event' = 'test' and body ? 'event_id' and body ->> 'test_to' ~ '@' from net.calls order by id desc limit 1), 'teste dispara o evento test com o destinatário');
+
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform tests.fails($$select public.admin_send_test_email()$$, 'forbidden', 'PO não envia e-mail de teste');
+  perform tests.fails($$select public.admin_notify_status()$$, 'forbidden', 'PO não vê o status do e-mail');
+  perform tests.logout();
+  perform tests.ok(not has_function_privilege('anon', 'public.admin_send_test_email(text)', 'execute') and not has_function_privilege('anon', 'public.admin_notify_status()', 'execute'), 'anon não executa as funções de diagnóstico');
+  delete from private.app_settings where key in ('notify_url', 'notify_secret');
+end $t$;
+
 -- ───────── 25. roadmap público e votos ─────────
 do $t$
 declare r1 record; r2 record; r3 record; a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); j jsonb; n int; v_sub uuid := gen_random_uuid(); v_extra uuid;
