@@ -691,15 +691,24 @@ begin
   perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
   perform public.add_comment(v_id, 'Resposta pública para o cliente', false);
   perform tests.logout();
-  select body into b from net.calls order by id desc limit 1;
-  perform tests.ok(b ->> 'event' = 'comment_public' and b ->> 'body' = 'Resposta pública para o cliente' and b ->> 'client_email' = 'cliente@exemplo.com', 'resposta pública dispara comment_public');
+  perform tests.ok((select count(*) = n + 1 from net.calls), 'resposta pública NÃO dispara e-mail');
 
   perform tests.login(gen_random_uuid(), 'aal1', true);
   perform public.add_client_comment(v_tok, 'Resposta do cliente');
   perform tests.logout();
+  perform tests.ok((select count(*) = n + 1 from net.calls), 'resposta do cliente NÃO dispara e-mail');
+
+  -- etapas sem relevância para o cliente (voltar para Recebido) não geram e-mail; as relevantes geram
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_status(v_id, 'RECEBIDO');
+  perform tests.logout();
+  perform tests.ok((select count(*) = n + 1 from net.calls), 'voltar para Recebido NÃO dispara e-mail');
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform public.set_request_status(v_id, 'EM_DESENVOLVIMENTO');
+  perform tests.logout();
   select body into b from net.calls order by id desc limit 1;
-  perform tests.ok(b ->> 'event' = 'client_reply' and b ->> 'body' = 'Resposta do cliente' and not (b ? 'client_email'), 'resposta do cliente dispara client_reply (só para a equipe)');
-  perform tests.ok((b ->> 'request_id') ~ '^[0-9a-f-]{36}$' and (b ->> 'event_id') is not null, 'client_reply leva request_id para o link do painel');
+  perform tests.ok((select count(*) = n + 2 from net.calls) and b ->> 'event' = 'status_changed' and b ->> 'status' = 'EM_DESENVOLVIMENTO' and b ->> 'requester_name' = 'Fulano de Tal', 'Em desenvolvimento dispara e-mail com o nome do cliente');
+  select count(*) into n from net.calls;
 
   -- pedido antigo (importado/anterior à obrigatoriedade) sem e-mail: cliente não recebe nada nas mudanças
   update public.requests set requester_email = null where id = tests.get('id1')::uuid;

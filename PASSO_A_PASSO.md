@@ -246,6 +246,21 @@ Não precisa configurar nada: o painel já marca em vermelho **sem resposta** (R
 - **Reenviar:** abra a solicitação no painel → bloco **Solicitante** → **Reenviar e-mail ao cliente**. O cliente recebe de novo a confirmação com protocolo, assunto, clínica, módulo, tipo, data, etapa atual e o botão com o link pessoal. Exige a permissão de responder publicamente (Admin, PO e Suporte), só aparece se a solicitação tem e-mail, vale no máximo 5 vezes por dia por solicitação e fica registrado na auditoria. O e-mail do cliente aparece mascarado na confirmação.
 - Depois de atualizar o banco (rode o `Supabase-completo.sql` de novo; é seguro repetir) e republicar a função `notify`, o resultado do reenvio aparece na mesma tabela como “Reenvio ao cliente”.
 
+### 5.2c Quais e-mails são enviados (versão 4.2)
+
+Para evitar spam, só estes e-mails existem:
+
+| E-mail | Quem recebe | Quando |
+|---|---|---|
+| Confirmação de recebimento | Cliente | Ao criar a solicitação |
+| Nova solicitação | Equipe (`TEAM_EMAILS`) | Ao criar a solicitação |
+| Atualização de etapa | Cliente | Ao passar para **Em análise**, **Aprovado para roadmap**, **Em desenvolvimento** ou **Concluído** (este pede a avaliação) |
+| Reenvio das informações | Cliente | Botão “Reenviar e-mail ao cliente” |
+| Boas-vindas | Novo usuário da equipe | Ao criar o usuário no painel |
+| Resumo de atrasos | Equipe | Opcional (desligado por padrão) |
+
+**Não** geram e-mail: respostas e comentários (públicos, internos ou do cliente), voltar uma solicitação para “Recebido”, arquivar e solicitações importadas. O cliente vê as respostas na página de acompanhamento e a equipe no painel.
+
 ### 5.3 Roadmap público e votos
 No formulário, enquanto a pessoa digita o título, o site sugere **pedidos parecidos já publicados no roadmap** (título, etapa e número de apoios; nada de dados pessoais) e incentiva apoiar em vez de enviar outro. Só entram na sugestão os pedidos **publicados**; por isso, publicar os pedidos mais comuns reduz duplicidade. A pessoa pode dispensar a sugestão e continuar.
 
@@ -261,7 +276,8 @@ Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas 
 1. No Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome `admin-users`, cole `supabase/functions/admin-users/index.ts`. Deixe **"Enforce JWT verification" LIGADO**. A chave `SUPABASE_SERVICE_ROLE_KEY` já é fornecida automaticamente pelo Supabase; não a coloque no site nem no GitHub.
 2. A função só age se quem chama for Admin (ela confere no banco antes de usar a chave de serviço).
 3. Senha: de 10 a 72 caracteres, com letras e números.
-4. Em **Equipe → Editar**: trocar nome, papel, ativar/desativar, redefinir a senha e controlar o autenticador.
+4. **E-mail de boas-vindas (versão 4.2):** ao criar um usuário, o painel pode enviar um e-mail formal com o endereço do painel, o e-mail de acesso, o perfil e (opcionalmente) a senha provisória. Para isso, cadastre nos **Secrets da função `admin-users`** o mesmo `WEBHOOK_SECRET` da função `notify` (e a função `notify` já precisa estar funcionando). Sem esse Secret o usuário é criado do mesmo jeito, só que sem e-mail. No formulário há duas caixas: “Enviar e-mail de boas-vindas” e “Incluir a senha temporária no e-mail”; desmarque a segunda se preferir entregar a senha por outro meio.
+5. Em **Equipe → Editar**: trocar nome, papel, ativar/desativar, redefinir a senha e controlar o autenticador.
 
 ### Entrada com autenticador (MFA) controlada pelo Admin
 - **Equipe → Entrada com autenticador**: chave geral. Ligada (padrão), todos usam senha + código do aplicativo. Desligada, quem tem a senha entra direto. **Desligar reduz a segurança**; use só em emergência ou em testes.

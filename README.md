@@ -29,7 +29,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 
 ## Recursos da versão 2
 - **Rascunho automático** da solicitação (neste navegador, 7 dias; anexos não são guardados).
-- **E-mail obrigatório** do cliente: recebe a confirmação formal com o link de acompanhamento e avisos de andamento; a equipe recebe aviso de nova solicitação e de resposta do cliente.
+- **E-mail obrigatório** do cliente: recebe a confirmação formal com o link de acompanhamento e avisos das etapas relevantes (análise, roadmap, desenvolvimento, conclusão); a equipe recebe o aviso de nova solicitação; novos usuários recebem e-mail de boas-vindas. Respostas e comentários não geram e-mail.
 - **Comentários com imagens** (Ctrl + V ou arquivo): ficam dentro do comentário, não na solicitação.
 - **Roadmap público** (`#/comunidade`) com votação "Também preciso disso" — só entra o que o PO/Admin publicar; sem dados pessoais.
 - **Respostas do cliente** na página de acompanhamento (com anexos) e **pesquisa de satisfação** (1 a 5 estrelas) ao concluir.

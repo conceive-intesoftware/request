@@ -201,23 +201,38 @@ await test("status_changed: ao cliente, com etapas em pt-BR", async () => {
   assert.match(m.subject, /CON-2026-0002/);
   assert.ok(m.html.includes("Em desenvolvimento") && m.html.includes("Aprovado para roadmap"));
 });
-await test("comment_public: cita a resposta; sem e-mail do cliente não envia", async () => {
+await test("respostas (comment_public / client_reply) não são mais e-mails: evento recusado, nada enviado", async () => {
   const { f, calls } = fakeFetch(() => ({}));
-  const ev = { event: "comment_public", protocol: "CON-2026-0003", title: "Agenda", body: "Já está em análise.\nObrigado!", client_email: "c@d.com", tracking_token: TOKEN };
-  assert.deepEqual(await (await notify(post(ev), ENV, f)).json(), { sent: 1 });
-  const m = sentBodies(calls)[0];
-  assert.deepEqual(m.to, ["c@d.com"]);
-  assert.ok(m.html.includes("Já está em análise.") && m.text.includes("Obrigado!"));
-  assert.deepEqual(await (await notify(post({ ...ev, client_email: null }), ENV, f)).json(), { sent: 0 });
+  for (const event of ["comment_public", "client_reply"]) {
+    const r = await notify(post({ event, protocol: "CON-2026-0003", title: "Agenda", body: "Olá", client_email: "c@d.com", tracking_token: TOKEN }), ENV, f);
+    assert.equal(r.status, 400);
+  }
+  assert.equal(calls.length, 0);
 });
-await test("client_reply: só à equipe", async () => {
+await test("status_changed: etapas sem relevância (Recebido, Arquivado) não geram e-mail", async () => {
   const { f, calls } = fakeFetch(() => ({}));
-  const r = await notify(post({ event: "client_reply", protocol: "CON-2026-0004", title: "Estoque", body: "Segue o print.", client_email: "c@d.com", tracking_token: TOKEN }), ENV, f);
+  for (const status of ["RECEBIDO", "ARQUIVADO"]) {
+    const r = await notify(post({ event: "status_changed", protocol: "CON-2026-0002", title: "Marcas", status, previous_status: "EM_ANALISE_PRODUTO", client_email: "c@d.com", tracking_token: TOKEN }), ENV, f);
+    assert.deepEqual(await r.json(), { sent: 0 });
+  }
+  assert.equal(calls.length, 0);
+});
+await test("staff_welcome: e-mail formal com endereço do painel, usuário, perfil e senha; sem senha se não enviada", async () => {
+  const { f, calls } = fakeFetch(() => ({}));
+  const ev = { event: "staff_welcome", protocol: "BOAS-VINDAS", title: "Boas-vindas à equipe", staff_email: "nova@clinica.com", staff_name: "Ana <b>Souza</b>", staff_role: "PO", temp_password: "Senha1234Forte" };
+  const r = await notify(post(ev), ENV, f);
   assert.deepEqual(await r.json(), { sent: 1 });
   const m = sentBodies(calls)[0];
-  assert.deepEqual(m.to, ["po@x.com", "dev@x.com"]);
-  assert.match(m.subject, /CON-2026-0004/);
-  assert.ok(!JSON.stringify(m).includes("c@d.com"));
+  assert.deepEqual(m.to, ["nova@clinica.com"]);
+  assert.match(m.subject, /Bem-vindo\(a\)/);
+  for (const t of [m.html, m.text]) assert.ok(t.includes("Senha1234Forte") && t.includes("nova@clinica.com") && t.includes("https://user.github.io/conceive-requests/#/admin") && t.includes("Product Owner"));
+  assert.ok(m.html.includes("#/login") && m.html.includes("Ana &lt;b&gt;Souza&lt;/b&gt;") && !m.html.includes("<b>Souza"), "nome escapado");
+  const { f: f2, calls: c2 } = fakeFetch(() => ({}));
+  await notify(post({ ...ev, temp_password: undefined }), ENV, f2);
+  const m2 = sentBodies(c2)[0];
+  assert.ok(!m2.html.includes("Senha1234Forte") && m2.html.includes("informada pelo administrador"));
+  const bad = await notify(post({ ...ev, staff_email: "xx" }), ENV, fakeFetch(() => ({})).f);
+  assert.deepEqual(await bad.json(), { sent: 0 });
 });
 await test("sla_digest: resumo só à equipe, com lista, contagem e link do painel", async () => {
   const { f, calls } = fakeFetch(() => ({}));
@@ -227,7 +242,7 @@ await test("sla_digest: resumo só à equipe, com lista, contagem e link do pain
   const m = sentBodies(calls)[0];
   assert.deepEqual(m.to, ["po@x.com", "dev@x.com"]);
   assert.match(m.subject, /40 solicitações precisam de atenção/);
-  assert.match(m.text, /CON-2026-0001: Pedido <b>parado<\/b> \(parada, 20 dias\)/);
+  assert.match(m.text, /CON-2026-0001: Pedido <b>parado<\/b> \(parada há 20 dias\)/);
   assert.ok(m.html.includes("Pedido &lt;b&gt;parado&lt;/b&gt;") && !m.html.includes("<b>parado"), "HTML escapado");
   assert.ok(m.html.includes("e mais 38"), "avisa quantas não couberam");
   assert.ok(m.html.includes("https://user.github.io/conceive-requests/#/admin"));
@@ -236,13 +251,11 @@ const RID = "123e4567-e89b-42d3-a456-426614174000";
 await test("e-mails da equipe trazem link direto para abrir a solicitação no painel", async () => {
   const { f, calls } = fakeFetch(() => ({}));
   await notify(post({ ...created, request_id: RID }), ENV, f);
-  await notify(post({ event: "client_reply", protocol: "CON-2026-0004", title: "Estoque", body: "x", request_id: RID }), ENV, f);
-  await notify(post({ event: "client_reply", protocol: "CON-2026-0005", title: "Sem id", body: "x", request_id: "../x" }), ENV, f);
+  await notify(post({ ...created, protocol: "CON-2026-0005", request_id: "../x", client_email: null }), ENV, f);
   const b = sentBodies(calls);
   const url = `https://user.github.io/conceive-requests/#/admin?abrir=${RID}`;
   assert.ok(b[1].html.includes(url) && b[1].text.includes(url), "aviso de nova solicitação");
-  assert.ok(b[2].html.includes(url) && b[2].text.includes(url), "resposta do cliente");
-  assert.ok(b[3].text.includes("#/admin\n") && !b[3].text.includes("abrir="), "id inválido cai no painel geral");
+  assert.ok(b[2].text.includes("#/admin\n") && !b[2].text.includes("abrir="), "id inválido cai no painel geral");
   assert.ok(!b[0].html.includes("abrir="), "o cliente nunca recebe link do painel");
 });
 await test("status CONCLUIDO pede a avaliação; outras etapas seguem o e-mail comum", async () => {
@@ -253,7 +266,7 @@ await test("status CONCLUIDO pede a avaliação; outras etapas seguem o e-mail c
   const [done, other] = sentBodies(calls);
   assert.match(done.subject, /conclu[ií]da/i);
   assert.ok(done.html.includes("Avaliar o atendimento") && done.text.includes(`#/acompanhar/${TOKEN}`));
-  assert.match(other.subject, /mudou de etapa/);
+  assert.match(other.subject, /em análise/i);
 });
 await test("Reply-To só quando REPLY_TO é válido; rodapé muda junto", async () => {
   const { f, calls } = fakeFetch(() => ({}));
@@ -262,7 +275,7 @@ await test("Reply-To só quando REPLY_TO é válido; rodapé muda junto", async 
   await notify(post(created), ENV, f);
   const b = sentBodies(calls);
   assert.equal(b[0].reply_to, "suporte@exemplo.com.br");
-  assert.ok(b[0].html.includes("Basta responder este e-mail"));
+  assert.ok(b[0].html.includes("basta responder a este e-mail"));
   assert.ok(!("reply_to" in b[2]) && b[2].html.includes("não é necessário respondê-la"));
   assert.ok(!("reply_to" in b[4]));
 });
@@ -361,8 +374,8 @@ await test("escape de HTML: <script> do título, do corpo e do protocolo não ap
   const { f, calls } = fakeFetch(() => ({}));
   const evil = `<script>alert(1)</script><img src=x onerror=alert(2)>"'`;
   await notify(post({ ...created, title: evil, clinic_name: evil }), ENV, f);
-  await notify(post({ event: "comment_public", protocol: "CON-2026-0009", title: evil, body: evil, client_email: "c@d.com", tracking_token: TOKEN }), ENV, f);
-  await notify(post({ event: "client_reply", protocol: evil, title: evil, body: evil }), ENV, f);
+  await notify(post({ event: "status_changed", protocol: "CON-2026-0009", title: evil, status: "CONCLUIDO", requester_name: evil, client_email: "c@d.com", tracking_token: TOKEN }), ENV, f);
+  await notify(post({ event: "request_resend", protocol: evil, title: evil, requester_name: evil, client_email: "c@d.com", tracking_token: TOKEN }), ENV, f);
   assert.ok(sentBodies(calls).some((m) => m.html.includes("&lt;script&gt;")), "pelo menos um e-mail mostra o texto escapado");
   for (const m of sentBodies(calls)) {
     assert.ok(!m.html.includes("<script>") && !m.html.includes("<img src=x"), "html sem tag crua");
@@ -652,6 +665,7 @@ function arouter(over: Partial<Record<string, any>> = {}) {
     if (c.url.endsWith("/rpc/admin_get_security")) return over.security ?? { body: { mfa_required: true } };
     if (c.url.endsWith("/auth/v1/admin/users") && c.init.method === "POST") return over.create ?? { status: 200, body: { id: U_ID } };
     if (c.url.endsWith("/rpc/admin_upsert_staff")) return over.staff ?? { body: U_ID };
+    if (c.url.endsWith("/functions/v1/notify")) return over.notify ?? { status: 200, body: { sent: 1 } };
     if (c.url.endsWith("/rpc/admin_list_staff")) return over.list ?? { body: [{ id: U_ID, email: "a@b.com" }] };
     if (c.url.includes("/auth/v1/admin/users/") && c.init.method === "PUT") return over.put ?? { status: 200, body: { id: U_ID } };
     return { status: 500 };
@@ -686,7 +700,7 @@ await test("create: valida, cria no Auth (e-mail confirmado), libera na equipe c
   const r = await adminUsers(acall(CREATE), AENV, f);
   assert.equal(r.status, 200);
   const out = await r.text();
-  assert.deepEqual(JSON.parse(out), { user_id: U_ID, email: "nova.pessoa@clinica.com" });
+  assert.deepEqual(JSON.parse(out), { user_id: U_ID, email: "nova.pessoa@clinica.com", welcome: "skipped" });
   assert.ok(!out.includes("SenhaForte123"), "senha nunca volta na resposta");
   const au = calls.find((c) => c.url.endsWith("/auth/v1/admin/users"))!;
   assert.equal(au.init.headers.authorization, "Bearer sb_secret_SERVICO");
@@ -694,6 +708,26 @@ await test("create: valida, cria no Auth (e-mail confirmado), libera na equipe c
   const st = calls.find((c) => c.url.endsWith("/rpc/admin_upsert_staff"))!;
   assert.equal(st.init.headers.authorization, "Bearer jwt-do-admin", "a liberação usa o token do Admin (auditoria e regras do banco)");
   assert.deepEqual(JSON.parse(st.init.body), { p_email: "nova.pessoa@clinica.com", p_name: "Nova Pessoa", p_role: "PO", p_active: true });
+});
+await test("create: com WEBHOOK_SECRET envia o e-mail de boas-vindas via notify (com ou sem a senha); falha no e-mail não desfaz o usuário", async () => {
+  const WENV = { ...AENV, WEBHOOK_SECRET: "segredo-do-webhook" };
+  let { f, calls } = arouter();
+  let r = await adminUsers(acall(CREATE), WENV, f);
+  assert.deepEqual(await r.json(), { user_id: U_ID, email: "nova.pessoa@clinica.com", welcome: "sent" });
+  const n = calls.find((c) => c.url === `${SB}/functions/v1/notify`)!;
+  assert.equal(n.init.headers["x-webhook-secret"], "segredo-do-webhook");
+  assert.deepEqual({ ...JSON.parse(n.init.body), event_id: "x" }, { event: "staff_welcome", protocol: "BOAS-VINDAS", title: "Boas-vindas à equipe", event_id: "x", staff_email: "nova.pessoa@clinica.com", staff_name: "Nova Pessoa", staff_role: "PO", temp_password: "SenhaForte123" });
+  ({ f, calls } = arouter());
+  await adminUsers(acall({ ...CREATE, include_password: false }), WENV, f);
+  assert.ok(!("temp_password" in JSON.parse(calls.find((c) => c.url.endsWith("/functions/v1/notify"))!.init.body)), "senha fora do e-mail quando não marcada");
+  ({ f, calls } = arouter());
+  r = await adminUsers(acall({ ...CREATE, send_welcome: false }), WENV, f);
+  assert.equal((await r.json()).welcome, "skipped");
+  assert.ok(!calls.some((c) => c.url.endsWith("/functions/v1/notify")));
+  ({ f } = arouter({ notify: { status: 502, body: {} } }));
+  r = await adminUsers(acall(CREATE), WENV, f);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).welcome, "failed");
 });
 await test("create: entradas inválidas são recusadas antes de qualquer chamada ao Auth", async () => {
   for (const [patch, err] of [[{ email: "sem-arroba" }, "invalid_email"], [{ name: "A" }, "invalid_name"], [{ role: "ROOT" }, "invalid_role"], [{ password: "curta" }, "weak_password"]] as const) {

@@ -487,7 +487,7 @@ end $$;
 
 create or replace function private.trg_notify()
 returns trigger language plpgsql security definer set search_path = '' as $$
-declare r public.requests; v jsonb;
+declare v jsonb;
 begin
   if tg_table_name = 'requests' then
     if new.origin <> 'FORM' then return new; end if;
@@ -497,23 +497,17 @@ begin
              'clinic_name', coalesce((select c.name from public.clinics c where c.id = new.clinic_id), new.pending_clinic_name),
              'client_email', new.requester_email, 'tracking_token', new.tracking_token,
              'requester_name', new.requester_name, 'created_at', new.created_at);
-    elsif new.status is distinct from old.status and new.status <> 'ARQUIVADO' and new.requester_email is not null then
+    -- só avisa o cliente nas etapas que importam (evita spam: voltar para Recebido ou arquivar não gera e-mail)
+    elsif new.status is distinct from old.status and new.status in ('EM_ANALISE_PRODUTO','APROVADO_ROADMAP','EM_DESENVOLVIMENTO','CONCLUIDO') and new.requester_email is not null then
       v := jsonb_build_object('event', 'status_changed', 'protocol', new.protocol, 'title', new.title,
-             'status', new.status, 'previous_status', old.status,
+             'status', new.status, 'previous_status', old.status, 'requester_name', new.requester_name,
              'client_email', new.requester_email, 'tracking_token', new.tracking_token);
     else
       return new;
     end if;
   else
-    select * into r from public.requests where id = new.request_id;
-    if new.author_kind = 'CLIENT' then
-      v := jsonb_build_object('event', 'client_reply', 'request_id', r.id, 'protocol', r.protocol, 'title', r.title, 'body', new.body);
-    elsif not new.is_internal and r.requester_email is not null then
-      v := jsonb_build_object('event', 'comment_public', 'protocol', r.protocol, 'title', r.title, 'body', new.body,
-             'client_email', r.requester_email, 'tracking_token', r.tracking_token);
-    else
-      return new;
-    end if;
+    -- respostas (comentários) NÃO geram e-mail: o cliente as vê na página de acompanhamento e a equipe no painel
+    return new;
   end if;
   perform private.notify_event(v);
   return new;
@@ -523,7 +517,8 @@ create trigger trg_notify_ins after insert on public.requests for each row execu
 drop trigger if exists trg_notify_upd on public.requests;
 create trigger trg_notify_upd after update of status on public.requests for each row execute function private.trg_notify();
 drop trigger if exists trg_notify_cmt on public.request_comments;
-create trigger trg_notify_cmt after insert on public.request_comments for each row execute function private.trg_notify();
+-- (sem gatilho em request_comments: respostas não enviam e-mail)
+drop trigger if exists trg_notify_cmt on public.request_comments;
 
 -- ---------------------------------------------------------------------
 -- 6. RLS (defesa em profundidade; o acesso real é via RPC)

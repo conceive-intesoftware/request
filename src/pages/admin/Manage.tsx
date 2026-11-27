@@ -213,6 +213,8 @@ export function Team({ meId }: { meId: string | null }) {
 
 function CreateUser({ onClose, onDone }: { onClose: () => void; onDone: (msg: string) => void }) {
   const [f, setF] = useState<{ email: string; name: string; role: StaffRole; password: string }>({ email: "", name: "", role: "SUPPORT", password: generatePassword() });
+  const [welcome, setWelcome] = useState(true);
+  const [withPass, setWithPass] = useState(true);
   const [show, setShow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -224,8 +226,11 @@ function CreateUser({ onClose, onDone }: { onClose: () => void; onDone: (msg: st
     if (!passwordOk(f.password)) { setError(PASS_HINT); return; }
     setBusy(true);
     try {
-      await api.createStaffUser({ ...f, email: f.email.trim(), name: f.name.trim() });
-      onDone(`Usuário ${f.name.trim()} criado. Entregue a senha temporária com segurança e peça para trocá-la no primeiro acesso.`);
+      const r = await api.createStaffUser({ ...f, email: f.email.trim(), name: f.name.trim(), send_welcome: welcome, include_password: withPass });
+      const nome = f.name.trim();
+      onDone(r.welcome === "sent" ? `Usuário ${nome} criado e e-mail de boas-vindas enviado para ${f.email.trim()}.`
+        : r.welcome === "failed" ? `Usuário ${nome} criado, mas o e-mail de boas-vindas não pôde ser enviado (veja Equipe → E-mails automáticos). Entregue a senha temporária com segurança e peça para trocá-la no primeiro acesso.`
+        : `Usuário ${nome} criado. Entregue a senha temporária com segurança e peça para trocá-la no primeiro acesso.`);
     } catch (err) { setError(errMsg(err)); setBusy(false); }
   }
   async function copy() {
@@ -247,6 +252,8 @@ function CreateUser({ onClose, onDone }: { onClose: () => void; onDone: (msg: st
             <button type="button" className="btn btn-icon" onClick={() => void copy()} aria-label="Copiar senha"><Icon name={copied ? "check" : "copy"} size={16} /></button>
           </div>
         </Field>
+        <label className="check"><input type="checkbox" checked={welcome} onChange={(e) => setWelcome(e.target.checked)} /> Enviar e-mail de boas-vindas com os dados de acesso</label>
+        {welcome && <label className="check"><input type="checkbox" checked={withPass} onChange={(e) => setWithPass(e.target.checked)} /> Incluir a senha temporária no e-mail (se desmarcado, entregue-a por outro meio)</label>}
         <div className="row end">
           <button type="button" className="btn" onClick={onClose}>Cancelar</button>
           <button className="btn btn-primary" disabled={busy}><Icon name="user-plus" size={16} />{busy ? "Criando…" : "Criar usuário"}</button>
@@ -322,7 +329,7 @@ function siteNote(body: string | null): string {
 }
 
 const EVENT_LABEL: Record<string, string> = {
-  request_created: "Nova solicitação", request_resend: "Reenvio ao cliente", status_changed: "Mudança de status", comment_public: "Resposta pública", client_reply: "Resposta do cliente",
+  request_created: "Nova solicitação", request_resend: "Reenvio ao cliente", staff_welcome: "Boas-vindas (novo usuário)", status_changed: "Mudança de status", comment_public: "Resposta pública", client_reply: "Resposta do cliente",
   sla_digest: "Resumo de atrasos", test: "E-mail de teste",
 };
 

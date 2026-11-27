@@ -284,7 +284,7 @@ const ADMIN_USERS_ERRORS: [RegExp, string][] = [
   [/forbidden/, "Somente administradores podem fazer isto."],
   [/not_configured/, "A função admin-users não está configurada no Supabase (veja a Parte 6 do passo a passo)."],
 ];
-async function invokeAdminUsers(body: Record<string, unknown>): Promise<{ user_id: string; email?: string }> {
+async function invokeAdminUsers(body: Record<string, unknown>): Promise<{ user_id: string; email?: string; welcome?: "sent" | "failed" | "skipped" }> {
   const fns = client().functions;
   if (!fns) throw new ApiError("Esta função não está disponível neste ambiente.");
   const { data, error } = await fns.invoke("admin-users", { body });
@@ -295,10 +295,10 @@ async function invokeAdminUsers(body: Record<string, unknown>): Promise<{ user_i
     for (const [re, msg] of ADMIN_USERS_ERRORS) if (re.test(raw)) throw new ApiError(msg, raw);
     throw new ApiError("Não foi possível concluir. Confirme se a função admin-users foi publicada no Supabase (veja a Parte 6 do passo a passo).", raw);
   }
-  return data as { user_id: string; email?: string };
+  return data as { user_id: string; email?: string; welcome?: "sent" | "failed" | "skipped" };
 }
 /** Cria o usuário (login) e já o libera na equipe. Senha: 10+ caracteres com letras e números. */
-export const createStaffUser = (input: { email: string; name: string; role: StaffRole; password: string }) =>
+export const createStaffUser = (input: { email: string; name: string; role: StaffRole; password: string; send_welcome?: boolean; include_password?: boolean }) =>
   invokeAdminUsers({ action: "create", ...input });
 export const setStaffPassword = (userId: string, password: string) => invokeAdminUsers({ action: "set_password", user_id: userId, password });
 /** Troca a senha de quem está logado. */

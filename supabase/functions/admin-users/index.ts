@@ -6,7 +6,10 @@
 // dentro do Supabase (SUPABASE_SERVICE_ROLE_KEY é injetada automaticamente); nunca vai para o navegador.
 // Senhas nunca são gravadas em log nem devolvidas na resposta.
 //
-// Ações (JSON):  { action: "create", email, name, role, password }  e  { action: "set_password", user_id, password }
+// Ações (JSON):  { action: "create", email, name, role, password, send_welcome? (padrão true), include_password? (padrão true) }
+//                e  { action: "set_password", user_id, password }
+// Boas-vindas: ao criar o usuário, a função pede à função "notify" (mesmo WEBHOOK_SECRET, cadastre-o também nos Secrets desta função)
+// o envio do e-mail com os dados de acesso. Se o WEBHOOK_SECRET não existir aqui, o usuário é criado do mesmo jeito (welcome: "skipped").
 
 declare const Deno: any;
 
@@ -88,7 +91,23 @@ export async function handle(req: Request, env: Env, fetchFn: FetchFn): Promise<
       });
       if (!r.ok) return json(500, { error: "staff_failed", user_id: userId });
     } catch { return json(500, { error: "staff_failed", user_id: userId }); }
-    return json(200, { user_id: userId, email });
+    // e-mail formal de boas-vindas (falha no e-mail nunca desfaz a criação do usuário)
+    let welcome: "sent" | "failed" | "skipped" = "skipped";
+    if (body.send_welcome !== false && env.WEBHOOK_SECRET) {
+      try {
+        const r = await fetchFn(`${sb}/functions/v1/notify`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-webhook-secret": env.WEBHOOK_SECRET },
+          body: JSON.stringify({
+            event: "staff_welcome", protocol: "BOAS-VINDAS", title: "Boas-vindas à equipe", event_id: crypto.randomUUID(),
+            staff_email: email, staff_name: name, staff_role: body.role,
+            ...(body.include_password !== false ? { temp_password: body.password } : {}),
+          }),
+        });
+        welcome = r.ok ? "sent" : "failed";
+      } catch { welcome = "failed"; }
+    }
+    return json(200, { user_id: userId, email, welcome });
   }
 
   // set_password: só para quem já é da equipe (a chave de serviço nunca mexe em contas de fora)
