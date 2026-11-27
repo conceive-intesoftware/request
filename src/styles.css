@@ -449,3 +449,16 @@ input[type="file"][hidden], .card input[type="file"][hidden] { display: none; }
 
 .similar { border: 1px solid color-mix(in srgb, var(--brand-2) 30%, transparent); background: var(--brand-soft); border-radius: 12px; padding: 12px 14px; margin: -4px 0 8px; font-size: .92rem; }
 .similar p { margin: 0 0 6px; } .similar ul { margin: 0 0 8px; padding-left: 18px; } .similar li { margin: 3px 0; }
+
+/* ── E-mails automáticos (trilha de envios) ── */
+.ml-status { display: flex; flex-wrap: wrap; gap: 8px; }
+.ml-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: .82rem; font-weight: 600; border: 1px solid var(--line); background: var(--surface); }
+.ml-chip.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; } .ml-chip.err { background: var(--err-bg); color: var(--err); border-color: transparent; } .ml-chip.plain { color: var(--muted); font-weight: 500; }
+.ml-table td { vertical-align: top; } .ml-table th:first-child, .ml-table td:first-child { padding-left: 18px; }
+.ml-type { display: block; font-weight: 650; } .ml-proto { display: block; margin-top: 2px; font-size: .78rem; color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.ml-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: .78rem; font-weight: 650; white-space: nowrap; background: var(--brand-soft); color: var(--brand); }
+.ml-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.ml-badge.ok { background: var(--ok-bg); color: var(--ok); } .ml-badge.err { background: var(--err-bg); color: var(--err); }
+.ml-badge.idle { background: transparent; border: 1px solid var(--line); color: var(--muted); } .ml-badge.wait { background: var(--info-bg); color: var(--text); }
+.ml-detail { font-size: .85rem; line-height: 1.45; max-width: 460px; color: var(--muted); } .ml-detail.err { color: var(--text); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

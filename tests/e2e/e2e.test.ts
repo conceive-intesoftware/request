@@ -522,7 +522,20 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   });
   await step("equipe: seção 'E-mails automáticos' aparece para o Admin (vazia sem configuração)", async () => {
     await admin.waitForSelector("h2:has-text('E-mails automáticos')");
-    await admin.waitForSelector("text=Nenhum envio registrado.");
+    await admin.waitForSelector("text=Nenhum envio registrado ainda");
+  });
+  await step("equipe: trilha de e-mails mostra tipo, protocolo e situação legíveis (sem códigos soltos)", async () => {
+    db.sql(`insert into private.notify_log (event, protocol, outcome, detail, created_at) values
+      ('request_created', 'CON-2026-0042', 'ERRO', 'timeout', now() - interval '3 hours'),
+      ('test', 'TESTE', 'ENFILEIRADO', null, now() - interval '5 hours'),
+      ('staff_welcome', 'BOAS-VINDAS', 'ENFILEIRADO', null, now() - interval '6 hours')`);
+    await admin.click("button:has-text('Atualizar')");
+    await admin.waitForSelector(".ml-table td:has-text('Nova solicitação')");
+    const txt = await admin.locator(".ml-table").innerText();
+    assert.ok(txt.includes("CON-2026-0042") && txt.includes("Falhou") && txt.includes("Sem confirmação") && txt.includes("Boas-vindas"), "rótulos legíveis");
+    assert.ok(!/ENFILEIRADO|TESTE|BOAS-VINDAS|request_created|HTTP/.test(txt), "nenhum código interno aparece");
+    if (process.env.E2E_SHOTS) await admin.locator(".maillog").screenshot({ path: resolve(OUT, "maillog.png") });
+    db.sql(`delete from private.notify_log`);
   });
   console.log("v3 — usuários, autenticador, edição");
   const nina = "SenhaNova123";

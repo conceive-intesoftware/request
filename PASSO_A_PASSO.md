@@ -246,6 +246,8 @@ Não precisa configurar nada: o painel já marca em vermelho **sem resposta** (R
 - **Reenviar:** abra a solicitação no painel → bloco **Solicitante** → **Reenviar e-mail ao cliente**. O cliente recebe de novo a confirmação com protocolo, assunto, clínica, módulo, tipo, data, etapa atual e o botão com o link pessoal. Exige a permissão de responder publicamente (Admin, PO e Suporte), só aparece se a solicitação tem e-mail, vale no máximo 5 vezes por dia por solicitação e fica registrado na auditoria. O e-mail do cliente aparece mascarado na confirmação.
 - Depois de atualizar o banco (rode o `Supabase-completo.sql` de novo; é seguro repetir) e republicar a função `notify`, o resultado do reenvio aparece na mesma tabela como “Reenvio ao cliente”.
 
+**Trilha de envios (Equipe → E-mails automáticos):** mostra data e hora, o tipo do e-mail (com o protocolo), a situação (*Entregue ao provedor*, *Enviando…*, *Falhou* ou *Sem confirmação*) e, só quando há problema, o motivo e como corrigir. “Entregue ao provedor” significa que o serviço de envio aceitou a mensagem; confira também a caixa de spam. “Sem confirmação” aparece em envios antigos, cujo retorno o banco já descartou, e não indica falha.
+
 ### 5.2c Quais e-mails são enviados (versão 4.2)
 
 Para evitar spam, só estes e-mails existem:

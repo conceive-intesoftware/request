@@ -318,18 +318,19 @@ function EditUser({ m, isMe, globalOff, onClose, onChanged, onError }: {
   );
 }
 
-/** Resposta do e-mail de teste: mostra o endereço do site que vai nos links dos e-mails e se ele abre. */
+/** Resposta do e-mail de teste: endereço do site usado nos links e se ele abre. */
 function siteNote(body: string | null): string {
   try {
     const j = JSON.parse(body ?? "");
     if (typeof j?.site_url !== "string") return "";
     const ok = typeof j.site_status === "number" && j.site_status >= 200 && j.site_status < 400;
-    return ` Links dos e-mails partem de ${j.site_url} — ${ok ? "o site abre (ok)" : "ATENÇÃO: este endereço não abriu; corrija o Secret SITE_URL"}.`;
+    const host = j.site_url.replace(/^https?:\/\//, "");
+    return ok ? `Links dos e-mails: ${host} (site acessível).` : `Atenção: o site ${host} não abriu. Corrija o Secret SITE_URL da função.`;
   } catch { return ""; }
 }
 
 const EVENT_LABEL: Record<string, string> = {
-  request_created: "Nova solicitação", request_resend: "Reenvio ao cliente", staff_welcome: "Boas-vindas (novo usuário)", status_changed: "Mudança de status", comment_public: "Resposta pública", client_reply: "Resposta do cliente",
+  request_created: "Nova solicitação", request_resend: "Reenvio ao cliente", staff_welcome: "Boas-vindas (novo usuário)", status_changed: "Atualização de etapa", comment_public: "Resposta pública (descontinuado)", client_reply: "Resposta do cliente (descontinuado)",
   sla_digest: "Resumo de atrasos", test: "E-mail de teste",
 };
 
@@ -337,18 +338,20 @@ const EVENT_LABEL: Record<string, string> = {
 export function explainReply(status: number, body: string | null): string {
   let j: Record<string, unknown> | null = null;
   try { j = body ? JSON.parse(body) as Record<string, unknown> : null; } catch { j = null; }
+  const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  const dot = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
   const parts: string[] = [];
   if (j && typeof j.reason === "string") parts.push(j.reason);
-  if (j && Array.isArray(j.missing) && j.missing.length) parts.push(`faltam/estão errados os Secrets: ${j.missing.join(", ")}`);
+  if (j && Array.isArray(j.missing) && j.missing.length) parts.push(`Faltam ou estão incorretos os Secrets: ${j.missing.join(", ")}`);
   if (j && typeof j.hint === "string") parts.push(j.hint);
-  if (j && typeof j.provider_message === "string" && j.provider_message) parts.push(`mensagem do provedor: “${j.provider_message}”`);
-  if (j && j.error === "invalid_test_recipient") parts.push("destinatário do teste inválido");
-  if (parts.length) return parts.join(" · ");
-  if (status === 401 && body && /jwt|authorization|bearer/i.test(body)) return "o Supabase barrou a chamada antes da função: desligue “Enforce JWT verification” na função notify";
-  if (status === 401) return "segredo diferente entre o banco e a função (WEBHOOK_SECRET), ou “Enforce JWT verification” ligado na função";
-  if (status === 404) return "a função notify não existe com esse nome, ou a URL gravada no banco está errada";
-  if (status >= 500) return "erro na função notify: veja os logs dela no Supabase (Edge Functions → notify → Logs)";
-  return "veja os logs da função notify no Supabase";
+  if (j && typeof j.provider_message === "string" && j.provider_message) parts.push(`Resposta do provedor: “${j.provider_message}”`);
+  if (j && j.error === "invalid_test_recipient") parts.push("Destinatário do teste inválido");
+  if (parts.length) return parts.map((t) => dot(cap(t))).join(" ");
+  if (status === 401 && body && /jwt|authorization|bearer/i.test(body)) return "O Supabase bloqueou a chamada antes da função. Desligue “Enforce JWT verification” na função notify.";
+  if (status === 401) return "O segredo do banco difere do WEBHOOK_SECRET da função, ou “Enforce JWT verification” está ligado.";
+  if (status === 404) return "A função notify não foi encontrada: confira o nome dela e a URL gravada no banco.";
+  if (status >= 500) return "Erro interno na função notify. Consulte os logs em Edge Functions → notify → Logs.";
+  return "Consulte os logs da função notify no Supabase.";
 }
 
 function MailLog() {
@@ -375,46 +378,63 @@ function MailLog() {
     } catch (e) { setError(errMsg(e)); } finally { setBusy(false); }
   }
 
-  const state = (r: NotifyLogRow) =>
-    r.outcome === "ERRO" ? { t: "falhou", c: "tag", why: r.detail ?? "erro ao chamar a função" }
-    : r.http_status === null ? { t: "enviado à função", c: "tag outline", why: r.http_error ?? "ainda sem retorno (ou o pg_net já descartou o histórico)" }
-    : r.http_status >= 200 && r.http_status < 300 ? { t: "ok", c: "tag a-CREATE", why: r.event === "test" ? `o provedor aceitou o envio: confira a caixa de entrada e o spam.${siteNote(r.http_body)}` : "" }
-    : { t: `falhou (HTTP ${r.http_status})`, c: "tag", why: explainReply(r.http_status, r.http_body) };
+  type Tone = "ok" | "err" | "wait" | "idle";
+  const state = (r: NotifyLogRow): { label: string; tone: Tone; detail: string } => {
+    const recent = Date.now() - new Date(r.created_at).getTime() < 2 * 60_000;
+    if (r.outcome === "ERRO") return { label: "Falhou", tone: "err", detail: r.detail ?? "Erro ao chamar a função de e-mail." };
+    if (r.http_status === null) return recent
+      ? { label: "Enviando…", tone: "wait", detail: "" }
+      : { label: "Sem confirmação", tone: "idle", detail: r.http_error ?? "" };
+    if (r.http_status >= 200 && r.http_status < 300) return { label: "Entregue ao provedor", tone: "ok", detail: r.event === "test" ? siteNote(r.http_body) : "" };
+    return { label: "Falhou", tone: "err", detail: explainReply(r.http_status, r.http_body) };
+  };
+  const GENERIC_PROTOCOLS = new Set(["TESTE", "RESUMO", "BOAS-VINDAS"]);
 
   const checks = status ? [
-    { ok: status.pg_net, t: "Extensão pg_net ativada", fix: "Database → Extensions → ative pg_net." },
-    { ok: status.url_set && status.secret_set, t: "Banco ligado à função (URL e segredo gravados)", fix: "Preencha v_notify_url e v_notify_secret na Parte B do SQL e rode o arquivo inteiro." },
+    { ok: status.pg_net, t: "Serviço de envio ativo", fix: "No Supabase: Database → Extensions → ative pg_net." },
+    { ok: status.url_set && status.secret_set, t: "Banco conectado à função de e-mail", fix: "Preencha v_notify_url e v_notify_secret na Parte B do SQL e rode o arquivo inteiro." },
   ] : [];
   const linked = !!status && status.pg_net && status.url_set && status.secret_set;
+  const sum = (rows ?? []).reduce((a, r) => { a[state(r).tone]++; return a; }, { ok: 0, err: 0, wait: 0, idle: 0 } as Record<Tone, number>);
 
   return (
-    <section className="card stack" aria-labelledby="maillog">
+    <section className="card stack maillog" aria-labelledby="maillog">
       <div className="row between">
         <div><h2 id="maillog">E-mails automáticos</h2>
-          <p className="muted">Últimos 30 envios. Use o teste para conferir a configuração de ponta a ponta.</p></div>
+          <p className="muted">Histórico dos últimos 30 envios. Envie um teste para confirmar a configuração de ponta a ponta.</p></div>
         <div className="row">
-          <button className="btn" disabled={busy || !linked} onClick={() => void sendTest()} title={linked ? "" : "Ligue o banco à função primeiro"}>{busy ? "Enviando…" : "Enviar e-mail de teste"}</button>
+          <button className="btn btn-primary" disabled={busy || !linked} onClick={() => void sendTest()} title={linked ? "" : "Conecte o banco à função primeiro"}>{busy ? "Enviando…" : "Enviar e-mail de teste"}</button>
           <button className="btn" onClick={() => void load()}>Atualizar</button>
         </div>
       </div>
       {error && <Banner>{error}</Banner>}
       {info && <Banner kind="ok">{info}</Banner>}
       {status && (
-        <ul className="checklist" aria-label="Situação da configuração">
-          {checks.map((c) => <li key={c.t}>{c.ok ? "✓" : "✗"} {c.t}{!c.ok && <span className="muted"> — {c.fix}</span>}</li>)}
-          {status.url && <li className="muted small">Endereço da função: <span className="mono">{status.url}</span></li>}
-        </ul>
+        <div className="ml-status" role="group" aria-label="Situação da configuração">
+          {checks.map((c) => <span key={c.t} className={`ml-chip ${c.ok ? "ok" : "err"}`}><span aria-hidden="true">{c.ok ? "✓" : "✗"}</span> {c.t}</span>)}
+          {rows && rows.length > 0 && <>
+            <span className="ml-chip plain"><strong>{sum.ok}</strong> entregues</span>
+            {sum.err > 0 && <span className="ml-chip err"><strong>{sum.err}</strong> com falha</span>}
+          </>}
+        </div>
       )}
+      {checks.filter((c) => !c.ok).map((c) => <Banner key={c.t}><strong>Como corrigir:</strong> {c.fix}</Banner>)}
       {!rows && !error && <Spinner />}
-      {rows && rows.length === 0 && <p className="muted">Nenhum envio registrado. {linked ? "Clique em “Enviar e-mail de teste”." : "O banco ainda não está ligado à função de e-mail (veja a lista acima)."}</p>}
+      {rows && rows.length === 0 && <p className="muted">Nenhum envio registrado ainda. {linked ? "Clique em “Enviar e-mail de teste”." : "Conecte o banco à função de e-mail para começar."}</p>}
       {rows && rows.length > 0 && (
-        <div className="table-wrap"><table className="table static">
-          <thead><tr><th>Quando</th><th>Tipo</th><th>Protocolo</th><th>Resultado</th><th>Motivo / o que fazer</th></tr></thead>
+        <div className="table-wrap"><table className="table static ml-table">
+          <caption className="sr-only">Histórico de e-mails automáticos</caption>
+          <thead><tr><th scope="col">Data e hora</th><th scope="col">E-mail</th><th scope="col">Situação</th><th scope="col">Detalhes</th></tr></thead>
           <tbody>{rows.map((r) => { const s = state(r); return (
-            <tr key={r.id}><td className="nowrap">{fmtDateTime(r.created_at)}</td><td>{EVENT_LABEL[r.event] ?? r.event}</td><td className="mono small">{r.protocol ?? "—"}</td>
-              <td><span className={s.c}>{s.t}</span></td><td className="small">{s.why}</td></tr>); })}</tbody>
+            <tr key={r.id}>
+              <td className="nowrap">{fmtDateTime(r.created_at)}</td>
+              <td><span className="ml-type">{EVENT_LABEL[r.event] ?? "Outro"}</span>{r.protocol && !GENERIC_PROTOCOLS.has(r.protocol) && <span className="ml-proto">{r.protocol}</span>}</td>
+              <td><span className={`ml-badge ${s.tone}`}>{s.label}</span></td>
+              <td className={`ml-detail ${s.tone === "err" ? "err" : ""}`}>{s.detail || <span className="muted">—</span>}</td>
+            </tr>); })}</tbody>
         </table></div>
       )}
+      {rows && rows.some((r) => state(r).tone === "idle") && <p className="muted small">“Sem confirmação”: o banco descarta o retorno dos envios antigos; isso não indica falha.</p>}
     </section>
   );
 }
