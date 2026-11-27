@@ -146,13 +146,13 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 
 **Como funciona:** ao criar uma solicitação, mudar o status ou comentar, o **banco** chama a **função `notify`** (Edge Function), que monta o e-mail e o entrega ao **provedor** (Brevo ou Resend). Três peças precisam estar certas: (A) o provedor, (B) a função com seus Secrets, (C) a ligação do banco. O painel tem um botão que testa tudo de uma vez (passo 7).
 
-**Escolha o provedor**
+**Escolha o provedor** (sem domínio próprio e com o Hotmail como remetente, o Brevo costuma não entregar: use o **Gmail (Apps Script)**, seção 5.1c, que é gratuito e não precisa de domínio)
 
 | | Brevo | Resend |
 |---|---|---|
 | Plano gratuito | 300 e-mails/dia | 3.000/mês, 100/dia |
 | Precisa de domínio próprio? | Não: dá para validar um e-mail simples (ex.: Hotmail) como remetente | **Sim**, domínio verificado (sem ele só envia para você mesmo) |
-| Observação | E-mail de provedor gratuito como remetente tende a ir para o spam | Melhor entrega, com domínio próprio |
+| Observação | E-mail de provedor gratuito (Hotmail, Gmail) como remetente tende a ir para o spam ou ser descartado; o próprio Brevo avisa “domínio Freemail não recomendado” | Melhor entrega, com domínio próprio |
 
 **A. Provedor**
 - **Brevo:** crie a conta em brevo.com → *Senders, domains & dedicated IPs → Senders → Add a sender* (e-mail que aparece como remetente; confirme pelo código que chega nele) → *SMTP & API → API keys → Generate* (copie a chave `xkeysib-...`).
@@ -168,10 +168,10 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 | Secret | Valor |
 |---|---|
 | `WEBHOOK_SECRET` | senha inventada por você, 32+ caracteres, só letras e números (a mesma do passo C) |
-| `MAIL_PROVIDER` | `brevo` ou `resend` (sem ele, vale `resend`) |
+| `MAIL_PROVIDER` | `brevo`, `resend` ou `apps_script` (sem ele, vale `resend`) |
 | `BREVO_API_KEY` ou `RESEND_API_KEY` | a chave do provedor escolhido |
 | `MAIL_FROM` | `Conceive <remetente@dominio.com>` (Brevo: o e-mail validado; Resend: do domínio verificado) |
-| `SITE_URL` | `https://USUARIO.github.io/conceive-requests/` (com a barra no final) |
+| `SITE_URL` | `https://USUARIO.github.io/conceive-requests/` (só o endereço do site: **sem** `#/...`, sem espaços; a função corta sobras, mas recusa endereço sem `https://`) |
 | `TEAM_EMAILS` | e-mails da equipe, separados por vírgula |
 | `REPLY_TO` (opcional) | e-mail que recebe as respostas dos clientes |
 
@@ -194,10 +194,22 @@ Com a função `admin-users` publicada (Parte 6), tudo é feito no painel:
 | HTTP 401 “Enforce JWT verification” | A função exige login: desligue essa opção (passo B.2). |
 | HTTP 404 | A função não se chama `notify` ou a URL do banco está errada. |
 | HTTP 500 “faltam os Secrets: …” | Cadastre os Secrets listados (e republique a função se os criou depois). |
-| HTTP 502 com mensagem do provedor | Siga a dica exibida (chave, remetente, IP no Brevo, domínio no Resend, limite diário). |
+| HTTP 502 com mensagem do provedor | Siga a dica exibida (chave, remetente, IP no Brevo, domínio no Resend, segredo/implantação do script do Google, limite diário). |
 | “ok” mas o e-mail não chega | Veja o spam; o log do provedor (Brevo: *Transactional → Logs*; Resend: *Emails*) diz se foi entregue ou barrado. |
 
 **Dados de envio:** o Resend recebe um `Idempotency-Key` por evento (um reenvio não duplica); o Brevo não tem esse recurso.
+
+#### 5.1c Sem domínio próprio: enviar pelo Gmail (Google Apps Script)
+O e-mail sai de uma **conta Gmail** (que os provedores aceitam como legítima), por um pequeno script do Google. É gratuito e não exige domínio. Limite: cerca de **100 destinatários por dia** em conta Gmail comum (cada pessoa da equipe conta); 1.500 no Google Workspace.
+
+1. **Conta remetente:** use uma conta Gmail só do Conceive (ex.: `conceive.sistema@gmail.com`), em vez da pessoal. É o endereço que o cliente verá como remetente.
+2. **Criar o script:** entre em script.google.com com essa conta → **Novo projeto**. Apague o código de exemplo, cole todo o `supabase/apps-script/Code.gs` e salve (nome: `Conceive e-mail`).
+3. **Senha do script:** engrenagem **Configurações do projeto → Propriedades do script → Adicionar propriedade**: nome `SECRET`, valor = uma senha inventada, 32+ caracteres, só letras e números. Anote-a: é a mesma que vai no Secret `APPS_SCRIPT_SECRET`.
+4. **Implantar:** **Implantar → Nova implantação →** engrenagem **App da Web →** *Executar como*: **Eu**; *Quem tem acesso*: **Qualquer pessoa → Implantar**. Quando o Google pedir, **autorize** (se avisar que o app não foi verificado: *Avançado → Acessar … (não seguro)*; é o seu próprio script). Copie o **URL da implantação** (termina em `/exec`).
+5. **Conferir:** abra esse URL no navegador. Deve aparecer `{"ok":true,"servico":"conceive-mail"}`. Se pedir login do Google, a implantação não está com acesso “Qualquer pessoa”.
+6. **Secrets da função `notify`:** `MAIL_PROVIDER` = `apps_script`; `APPS_SCRIPT_URL` = o URL do passo 4; `APPS_SCRIPT_SECRET` = a senha do passo 3; `WEBHOOK_SECRET`, `SITE_URL`, `TEAM_EMAILS` como no 5.1; `MAIL_FROM` é opcional (só o nome exibido: `Conceive <conceive.sistema@gmail.com>`); `REPLY_TO` opcional. `BREVO_API_KEY`/`RESEND_API_KEY` não são usadas.
+7. **Republique** a `notify` com o `index.ts` desta versão (clique em *Deploy*) e use **Equipe → E-mails automáticos → Enviar e-mail de teste**.
+8. Se você editar o `Code.gs` depois, publique **Implantar → Gerenciar implantações → editar → Nova versão** (senão a versão antiga continua no ar).
 
 ### 5.2 Criar tarefa no Redmine/Pipefy (função `external-task`)
 1. Publique a função `external-task` (conteúdo de `supabase/functions/external-task/index.ts`) com **"Enforce JWT verification" LIGADO**.
@@ -227,6 +239,12 @@ Depois que a tarefa foi criada (5.2), o Conceive passa a **ler** o andamento del
 Não precisa configurar nada: o painel já marca em vermelho **sem resposta** (Recebido há mais de 3 dias sem resposta da equipe, ou cliente respondeu e a equipe não voltou) e **parada** (Em análise ou Em desenvolvimento sem movimentação há mais de 15 dias). Use o filtro **Atraso** na lista; a tela **Métricas** mostra o total. Pedidos concluídos, arquivados, mesclados ou importados da planilha antiga não entram na conta.
 - **Resumo diário por e-mail (opcional):** troque `v_cron_sla := true` na Parte B do `Supabase-completo.sql` (precisa de `pg_cron` e dos e-mails já configurados). Para mudar os prazos, veja o comentário no topo do arquivo.
 - Os prazos contam dias corridos, não dias úteis.
+
+### 5.2b Conferir os links e reenviar o e-mail ao cliente (versão 4.1)
+
+- **Conferir o link:** em **Equipe → E-mails automáticos → Enviar e-mail de teste**. O e-mail de teste passa a mostrar o *Site* e um *Link do cliente (exemplo)*, e a linha do teste na tabela diz “Links dos e-mails partem de … — o site abre (ok)” ou “ATENÇÃO: este endereço não abriu”. Se o link estiver errado, corrija o Secret `SITE_URL` da função `notify` (formato `https://USUARIO.github.io/NOME-DO-REPOSITORIO/`) e clique em Deploy.
+- **Reenviar:** abra a solicitação no painel → bloco **Solicitante** → **Reenviar e-mail ao cliente**. O cliente recebe de novo a confirmação com protocolo, assunto, clínica, módulo, tipo, data, etapa atual e o botão com o link pessoal. Exige a permissão de responder publicamente (Admin, PO e Suporte), só aparece se a solicitação tem e-mail, vale no máximo 5 vezes por dia por solicitação e fica registrado na auditoria. O e-mail do cliente aparece mascarado na confirmação.
+- Depois de atualizar o banco (rode o `Supabase-completo.sql` de novo; é seguro repetir) e republicar a função `notify`, o resultado do reenvio aparece na mesma tabela como “Reenvio ao cliente”.
 
 ### 5.3 Roadmap público e votos
 No formulário, enquanto a pessoa digita o título, o site sugere **pedidos parecidos já publicados no roadmap** (título, etapa e número de apoios; nada de dados pessoais) e incentiva apoiar em vez de enviar outro. Só entram na sugestão os pedidos **publicados**; por isso, publicar os pedidos mais comuns reduz duplicidade. A pessoa pode dispensar a sugestão e continuar.

@@ -344,6 +344,14 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   await step("modal: detalhes, anexo, mudar status", async () => {
     await po.click(`td:has-text('${TITLE}')`);
     await po.waitForSelector("[role=dialog] >> text=Definimos que iremos");
+    if (await po.locator("button:has-text('Reenviar e-mail ao cliente')").count()) {
+      // sem e-mail ligado no ambiente de teste: o painel deve responder com o aviso amigável, não quebrar
+      let msg = "";
+      po.once("dialog", (d: any) => { msg = d.message(); });
+      await po.click("button:has-text('Reenviar e-mail ao cliente')");
+      await po.waitForSelector("[role=dialog] .banner, [role=dialog] [role=alert]", { timeout: 6000 }).catch(() => {});
+      assert.ok(await po.isVisible("[role=dialog] >> text=Definimos que iremos"), "modal segue aberto após o reenvio");
+    }
     assert.ok(await po.isVisible("[role=dialog] >> text=print_da_tela.png"), "anexo listado com nome saneado");
     assert.ok(await po.isVisible("[role=dialog] >> text=/print-\\d{8}-\\d{6}\\.png/"), "print colado chegou como anexo");
     await snap(po, "detalhes");
@@ -482,6 +490,7 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await dev.waitForSelector("[role=dialog] >> text=mascarado (LGPD)");
     assert.equal(await dev.locator("[role=tab]:has-text('Auditoria')").count(), 0);
     assert.equal(await dev.locator("#st").isDisabled(), true);
+    assert.equal(await dev.locator("button:has-text('Reenviar e-mail ao cliente')").count(), 0, "DEV não reenvia e-mail");
     assert.ok(await dev.isVisible(".contact li:has-text('(**) *****-3000')"));
   });
   await step("dev só comenta internamente (checkbox de resposta pública desabilitado)", async () => {

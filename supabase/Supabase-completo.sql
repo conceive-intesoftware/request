@@ -1513,6 +1513,34 @@ begin
   return jsonb_build_object('to', v_to);
 end $$;
 
+-- Botão "Reenviar e-mail ao cliente" da solicitação: manda de novo a confirmação com o link pessoal de acompanhamento,
+-- os dados da solicitação e a etapa atual. Só para solicitações do formulário com e-mail informado; máx. 5 reenvios por dia
+-- por solicitação (contado no log de e-mails). Devolve o e-mail mascarado (j***@dominio.com), nunca o completo.
+create or replace function public.admin_resend_request_email(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare r public.requests; v_url text; v_secret text; v_masked text;
+begin
+  perform private.require('comment:public');
+  select s.value into v_url    from private.app_settings s where s.key = 'notify_url';
+  select s.value into v_secret from private.app_settings s where s.key = 'notify_secret';
+  if coalesce(v_url, '') = '' or coalesce(v_secret, '') = '' then raise exception 'notify_not_configured'; end if;
+  select * into r from public.requests where id = p_id and deleted_at is null;
+  if not found then raise exception 'not_found'; end if;
+  if r.requester_email is null or r.tracking_token is null then raise exception 'no_client_email'; end if;
+  if (select count(*) from private.notify_log l
+        where l.event = 'request_resend' and l.protocol = r.protocol and l.created_at > now() - interval '1 day') >= 5 then
+    raise exception 'resend_limit';
+  end if;
+  perform private.notify_event(jsonb_build_object('event', 'request_resend', 'request_id', r.id, 'protocol', r.protocol,
+    'title', r.title, 'module', r.module, 'type', r.type, 'status', r.status,
+    'clinic_name', coalesce((select c.name from public.clinics c where c.id = r.clinic_id), r.pending_clinic_name),
+    'client_email', r.requester_email, 'tracking_token', r.tracking_token,
+    'requester_name', r.requester_name, 'created_at', r.created_at));
+  perform private.write_audit('UPDATE', 'request_email_resend', r.id::text, null, jsonb_build_object('protocol', r.protocol));
+  v_masked := regexp_replace(r.requester_email, '^(.).*(@.*)$', '\1***\2');
+  return jsonb_build_object('to', v_masked);
+end $$;
+
 -- O usuário precisa existir em Authentication → Users (convite/criação no painel do Supabase).
 create or replace function public.admin_upsert_staff(
   p_email text, p_name text, p_role public.app_role, p_active boolean default true)
@@ -1606,6 +1634,7 @@ grant execute on function
   public.admin_notify_log(int),
   public.admin_notify_status(),
   public.admin_send_test_email(text),
+  public.admin_resend_request_email(uuid),
   public.admin_upsert_staff(text, text, public.app_role, boolean),
   public.admin_upsert_clinic(uuid, text, boolean),
   public.admin_add_unit(uuid, text),

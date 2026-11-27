@@ -311,8 +311,18 @@ function EditUser({ m, isMe, globalOff, onClose, onChanged, onError }: {
   );
 }
 
+/** Resposta do e-mail de teste: mostra o endereço do site que vai nos links dos e-mails e se ele abre. */
+function siteNote(body: string | null): string {
+  try {
+    const j = JSON.parse(body ?? "");
+    if (typeof j?.site_url !== "string") return "";
+    const ok = typeof j.site_status === "number" && j.site_status >= 200 && j.site_status < 400;
+    return ` Links dos e-mails partem de ${j.site_url} — ${ok ? "o site abre (ok)" : "ATENÇÃO: este endereço não abriu; corrija o Secret SITE_URL"}.`;
+  } catch { return ""; }
+}
+
 const EVENT_LABEL: Record<string, string> = {
-  request_created: "Nova solicitação", status_changed: "Mudança de status", comment_public: "Resposta pública", client_reply: "Resposta do cliente",
+  request_created: "Nova solicitação", request_resend: "Reenvio ao cliente", status_changed: "Mudança de status", comment_public: "Resposta pública", client_reply: "Resposta do cliente",
   sla_digest: "Resumo de atrasos", test: "E-mail de teste",
 };
 
@@ -361,7 +371,7 @@ function MailLog() {
   const state = (r: NotifyLogRow) =>
     r.outcome === "ERRO" ? { t: "falhou", c: "tag", why: r.detail ?? "erro ao chamar a função" }
     : r.http_status === null ? { t: "enviado à função", c: "tag outline", why: r.http_error ?? "ainda sem retorno (ou o pg_net já descartou o histórico)" }
-    : r.http_status >= 200 && r.http_status < 300 ? { t: "ok", c: "tag a-CREATE", why: r.event === "test" ? "o provedor aceitou o envio: confira a caixa de entrada e o spam" : "" }
+    : r.http_status >= 200 && r.http_status < 300 ? { t: "ok", c: "tag a-CREATE", why: r.event === "test" ? `o provedor aceitou o envio: confira a caixa de entrada e o spam.${siteNote(r.http_body)}` : "" }
     : { t: `falhou (HTTP ${r.http_status})`, c: "tag", why: explainReply(r.http_status, r.http_body) };
 
   const checks = status ? [

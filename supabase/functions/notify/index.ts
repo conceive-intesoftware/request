@@ -4,16 +4,18 @@
 //
 // Segredos (Edge Functions → Secrets):
 //   WEBHOOK_SECRET   texto longo e aleatório (o mesmo guardado no banco)
-//   MAIL_PROVIDER    (opcional) "resend" (padrão) ou "brevo"
+//   MAIL_PROVIDER    (opcional) "resend" (padrão), "brevo" ou "apps_script" (envio pelo Gmail, sem domínio próprio)
 //   RESEND_API_KEY   chave da API do Resend (re_...)               — só com MAIL_PROVIDER=resend
 //   BREVO_API_KEY    chave da API do Brevo (xkeysib-...)           — só com MAIL_PROVIDER=brevo
+//   APPS_SCRIPT_URL / APPS_SCRIPT_SECRET   URL /exec e senha do script supabase/apps-script/Code.gs — só com MAIL_PROVIDER=apps_script
+//                    (neste caso MAIL_FROM é opcional: só o nome de exibição é usado; o remetente é a conta Google do script)
 //   MAIL_FROM        ex.: Conceive <solicitacoes@seudominio.com.br>. Resend: domínio verificado. Brevo: remetente validado
 //                    (pode ser um e-mail simples, como o do Hotmail, validado em Brevo → Senders)
 //   SITE_URL         endereço do site, ex.: https://usuario.github.io/conceive-requests/
 //   TEAM_EMAILS      (opcional) e-mails da equipe, separados por vírgula
 //   REPLY_TO         (opcional) endereço que recebe as respostas dos clientes (cabeçalho Reply-To)
 //
-// Eventos aceitos (JSON): request_created, status_changed, comment_public, client_reply, sla_digest (resumo diário da equipe)
+// Eventos aceitos (JSON): request_created, request_resend (reenvio ao cliente, botão do painel), status_changed, comment_public, client_reply, sla_digest (resumo diário da equipe)
 // e test (e-mail de teste, disparado pelo botão do painel Equipe → E-mails automáticos).
 // Em caso de erro a resposta traz o motivo (campos reason / missing / provider_status / provider_message / hint): o painel os exibe.
 
@@ -41,6 +43,7 @@ const oneLine = (s: unknown, max = 120) => String(s ?? "").replace(/\s+/g, " ").
 const EMAIL_RE = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]{2,}$/;
 const validEmail = (v: unknown): v is string => typeof v === "string" && v.length <= 254 && EMAIL_RE.test(v.trim());
 const TOKEN_RE = /^[0-9a-f]{48}$/;
+const APPS_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EVENT_ID_RE = /^[0-9A-Za-z-]{8,64}$/;
 
@@ -63,6 +66,14 @@ const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 interface Mail { to: string[]; subject: string; html: string; text: string }
+
+/** Endereço-base do site, sempre terminado em "/". Corta "#/..." e "?..." colados por engano e "index.html"; exige https (ou localhost). */
+function normalizeSite(raw: string | undefined): string | null {
+  const v = (raw ?? "").trim().split("#")[0].split("?")[0].replace(/index\.html$/i, "").trim();
+  if (!v) return null;
+  if (!/^https:\/\/[^\s/]+(\/\S*)?$/i.test(v) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/i.test(v)) return null;
+  return v.replace(/\/*$/, "/");
+}
 
 /** Link do painel que já abre a solicitação (só funciona para quem tem login de equipe). */
 function adminLink(site: string, id: unknown): string {
@@ -98,7 +109,7 @@ function fmtDateTime(v: unknown): string {
 const row = (k: string, v: string) => `<tr><td style="padding:4px 12px 4px 0;color:#6b6880">${esc(k)}</td><td style="padding:4px 0"><strong>${esc(v)}</strong></td></tr>`;
 
 function buildMails(p: any, env: Env): Mail[] {
-  const site = (env.SITE_URL ?? "").replace(/\/*$/, "/");
+  const site = normalizeSite(env.SITE_URL) ?? "";
   const link = typeof p.tracking_token === "string" && TOKEN_RE.test(p.tracking_token) ? `${site}#/acompanhar/${p.tracking_token}` : null;
   const client = validEmail(p.client_email) && link ? [p.client_email.trim()] : [];
   const team = (env.TEAM_EMAILS ?? "").split(",").map((s) => s.trim()).filter(validEmail).slice(0, 50);
@@ -109,26 +120,40 @@ function buildMails(p: any, env: Env): Mail[] {
   const layout = (h: string, b: string, btn?: { url: string; text: string }, formal = false) => baseLayout(h, b, btn, formal, replyable);
   const panel = adminLink(site, p.request_id);
 
+  /** E-mail formal ao cliente com protocolo, resumo e o link pessoal. `resend` = reenvio pedido pela equipe (mostra a etapa atual). */
+  const confirmation = (resend: boolean): Mail => {
+    const nome = oneLine(p.requester_name, 120);
+    const greet = nome ? `Prezado(a) ${nome},` : "Prezado(a) cliente,";
+    const mod0 = label(MODULES, p.module), typ0 = label(TYPES, p.type), clin0 = oneLine(p.clinic_name || "—", 160);
+    const when = fmtDateTime(p.created_at);
+    const situacao = resend ? label(STATUSES, p.status) : "Recebido";
+    const intro = resend
+      ? `A pedido da nossa equipe, reenviamos as informações da sua solicitação, registrada sob o protocolo <strong style="font-size:18px">${esc(proto)}</strong>.`
+      : `Confirmamos o recebimento da sua solicitação, registrada sob o protocolo <strong style="font-size:18px">${esc(proto)}</strong>. Nossa equipe fará a análise e retornará por este canal.`;
+    const introTxt = resend
+      ? `A pedido da nossa equipe, reenviamos as informações da sua solicitação, registrada sob o protocolo ${proto}.`
+      : `Confirmamos o recebimento da sua solicitação, registrada sob o protocolo ${proto}.\nNossa equipe fará a análise e retornará por este canal.`;
+    return {
+      to: client,
+      subject: resend ? `[${proto}] Reenvio: link de acompanhamento da sua solicitação` : `[${proto}] Confirmação de recebimento da sua solicitação`,
+      html: layout(resend ? "Informações da sua solicitação" : "Confirmação de recebimento",
+        `<p>${esc(greet)}</p>
+         <p>${intro}</p>
+         <table style="border-collapse:collapse;margin:12px 0">${row("Protocolo", proto)}${row("Assunto", title)}${row("Clínica", clin0)}${row("Módulo", mod0)}${row("Tipo de demanda", typ0)}${when ? row("Registrada em", when) : ""}${row("Situação atual", situacao)}</table>
+         <p>Para consultar o andamento, enviar informações complementares ou avaliar o atendimento, utilize o botão abaixo.</p>
+         <p><strong>Guarde este e-mail:</strong> o link é pessoal e é a única forma de acompanhar a solicitação, pois não há login para clientes. Não o compartilhe com terceiros.</p>`,
+        { url: link!, text: "Acompanhar solicitação" }, true),
+      text: `${greet}\n\n${introTxt}\n\nAssunto: ${title}\nClínica: ${clin0}\nMódulo: ${mod0}\nTipo de demanda: ${typ0}\n${when ? `Registrada em: ${when}\n` : ""}Situação atual: ${situacao}\n\nGuarde este e-mail: o link abaixo é pessoal e é a única forma de acompanhar a solicitação. Não o compartilhe com terceiros.\n${link}\n\nAtenciosamente,\nEquipe Conceive\n`,
+    };
+  };
+
   switch (p.event) {
+    case "request_resend": {
+      if (client.length && link) mails.push(confirmation(true));
+      break;
+    }
     case "request_created": {
-      if (client.length && link) {
-        const nome = oneLine(p.requester_name, 120);
-        const greet = nome ? `Prezado(a) ${nome},` : "Prezado(a) cliente,";
-        const mod0 = label(MODULES, p.module), typ0 = label(TYPES, p.type), clin0 = oneLine(p.clinic_name || "—", 160);
-        const when = fmtDateTime(p.created_at);
-        mails.push({
-          to: client,
-          subject: `[${proto}] Confirmação de recebimento da sua solicitação`,
-          html: layout("Confirmação de recebimento",
-            `<p>${esc(greet)}</p>
-             <p>Confirmamos o recebimento da sua solicitação, registrada sob o protocolo <strong style="font-size:18px">${esc(proto)}</strong>. Nossa equipe fará a análise e retornará por este canal.</p>
-             <table style="border-collapse:collapse;margin:12px 0">${row("Protocolo", proto)}${row("Assunto", title)}${row("Clínica", clin0)}${row("Módulo", mod0)}${row("Tipo de demanda", typ0)}${when ? row("Registrada em", when) : ""}${row("Situação atual", "Recebido")}</table>
-             <p>Para consultar o andamento, enviar informações complementares ou avaliar o atendimento, utilize o botão abaixo.</p>
-             <p><strong>Guarde este e-mail:</strong> o link é pessoal e é a única forma de acompanhar a solicitação, pois não há login para clientes. Não o compartilhe com terceiros.</p>`,
-            { url: link, text: "Acompanhar solicitação" }, true),
-          text: `${greet}\n\nConfirmamos o recebimento da sua solicitação, registrada sob o protocolo ${proto}.\nNossa equipe fará a análise e retornará por este canal.\n\nAssunto: ${title}\nClínica: ${clin0}\nMódulo: ${mod0}\nTipo de demanda: ${typ0}\n${when ? `Registrada em: ${when}\n` : ""}Situação atual: Recebido\n\nGuarde este e-mail: o link abaixo é pessoal e é a única forma de acompanhar a solicitação. Não o compartilhe com terceiros.\n${link}\n\nAtenciosamente,\nEquipe Conceive\n`,
-        });
-      }
+      if (client.length && link) mails.push(confirmation(false));
       if (team.length) {
         const mod = label(MODULES, p.module), typ = label(TYPES, p.type), clin = oneLine(p.clinic_name || "—", 160);
         mails.push({
@@ -206,10 +231,11 @@ function buildMails(p: any, env: Env): Mail[] {
           subject: "[Conceive] Teste de e-mail",
           html: layout("Teste de e-mail",
             `<p>Se você está lendo esta mensagem, o envio automático de e-mails do Conceive está funcionando.</p>
-             <table style="border-collapse:collapse">${row("Provedor", prov)}${row("Remetente", remetente)}</table>
+             <table style="border-collapse:collapse">${row("Provedor", prov)}${row("Remetente", remetente)}${row("Site", site)}${row("Link do cliente (exemplo)", `${site}#/acompanhar/…`)}</table>
+             <p>Os e-mails aos clientes levam um link no formato do exemplo acima. Se o endereço do site estiver errado, corrija o Secret SITE_URL.</p>
              <p>Se ela chegou na caixa de spam, marque como “não é spam” para que os e-mails reais cheguem na caixa de entrada.</p>`,
             { url: `${site}#/admin`, text: "Abrir o painel" }),
-          text: `Se você está lendo esta mensagem, o envio automático de e-mails do Conceive está funcionando.\nProvedor: ${prov}\nRemetente: ${remetente}\n\nSe ela chegou no spam, marque como “não é spam”.\nPainel: ${site}#/admin\n`,
+          text: `Se você está lendo esta mensagem, o envio automático de e-mails do Conceive está funcionando.\nProvedor: ${prov}\nRemetente: ${remetente}\nSite: ${site}\nLink do cliente (exemplo): ${site}#/acompanhar/…\n\nSe ela chegou no spam, marque como “não é spam”.\nPainel: ${site}#/admin\n`,
         });
       }
       break;
@@ -236,7 +262,7 @@ function buildMails(p: any, env: Env): Mail[] {
   return mails;
 }
 
-const EVENTS = ["request_created", "status_changed", "comment_public", "client_reply", "sla_digest", "test"];
+const EVENTS = ["request_created", "request_resend", "status_changed", "comment_public", "client_reply", "sla_digest", "test"];
 
 /** Mensagem curta de erro devolvida pelo provedor (sem a chave, caso ela venha repetida). */
 async function providerMessage(r: { json?: () => Promise<any>; text?: () => Promise<string> }, secret: string): Promise<string> {
@@ -257,6 +283,14 @@ function hintFor(provider: string, status: number, message: string): string {
   const m = message.toLowerCase();
   if (status === 0) return "a função não conseguiu falar com o provedor (rede)";
   if (status === 429) return "limite de envios do provedor atingido (por segundo ou por dia)";
+  if (provider === "apps_script") {
+    if (m.includes("unauthorized")) return "APPS_SCRIPT_SECRET diferente da propriedade SECRET do script do Google";
+    if (m.includes("script_sem_secret")) return "o script do Google não tem a propriedade SECRET (Configurações do projeto → Propriedades do script)";
+    if (m.includes("implantação") || m.includes("login")) return "a implantação do script precisa estar como “Executar como: Eu” e “Quem tem acesso: Qualquer pessoa”; depois de editar o código, publique uma nova versão";
+    if (m.includes("too many times") || m.includes("quota") || m.includes("limit")) return "limite diário de envios do Gmail atingido (cerca de 100 destinatários por dia em conta comum)";
+    if (status === 404 || status === 403) return "URL do script (APPS_SCRIPT_URL) incorreta, ou implantação sem acesso para “Qualquer pessoa”";
+    return "veja a mensagem do script";
+  }
   if (provider === "brevo") {
     if (m.includes("ip") && (m.includes("unrecognised") || m.includes("unrecognized") || m.includes("authori"))) return "o Brevo bloqueou o IP do Supabase: em Brevo → Security → Authorized IPs, desative o bloqueio de IPs desconhecidos";
     if (status === 401) return "chave do Brevo inválida/copiada incompleta, ou bloqueio de IPs ativo no Brevo (Security → Authorized IPs)";
@@ -282,14 +316,21 @@ export async function handle(req: Request, env: Env, fetchFn: FetchFn): Promise<
   if (typeof payload.protocol !== "string" || typeof payload.title !== "string") return json(400, { error: "invalid_payload" });
 
   const provider = (env.MAIL_PROVIDER ?? "resend").trim().toLowerCase();
-  if (provider !== "resend" && provider !== "brevo") return json(500, { error: "not_configured", missing: ["MAIL_PROVIDER (use resend ou brevo)"] });
-  const apiKey = provider === "brevo" ? env.BREVO_API_KEY : env.RESEND_API_KEY;
+  if (provider !== "resend" && provider !== "brevo" && provider !== "apps_script") return json(500, { error: "not_configured", missing: ["MAIL_PROVIDER (use resend, brevo ou apps_script)"] });
+  const apiKey = provider === "brevo" ? env.BREVO_API_KEY : provider === "apps_script" ? env.APPS_SCRIPT_SECRET : env.RESEND_API_KEY;
   const from = parseFrom(env.MAIL_FROM);
   const missing: string[] = [];
-  if (!apiKey) missing.push(provider === "brevo" ? "BREVO_API_KEY" : "RESEND_API_KEY");
-  if (!from) missing.push(env.MAIL_FROM ? "MAIL_FROM (formato: Nome <email@dominio.com>)" : "MAIL_FROM");
+  if (provider === "apps_script") {
+    if (!env.APPS_SCRIPT_URL) missing.push("APPS_SCRIPT_URL");
+    else if (!APPS_URL_RE.test(env.APPS_SCRIPT_URL.trim())) missing.push("APPS_SCRIPT_URL (deve ser https://script.google.com/macros/s/.../exec)");
+    if (!apiKey) missing.push("APPS_SCRIPT_SECRET");
+  } else {
+    if (!apiKey) missing.push(provider === "brevo" ? "BREVO_API_KEY" : "RESEND_API_KEY");
+    if (!from) missing.push(env.MAIL_FROM ? "MAIL_FROM (formato: Nome <email@dominio.com>)" : "MAIL_FROM");
+  }
   if (!env.SITE_URL) missing.push("SITE_URL");
-  if (missing.length || !apiKey || !from) return json(500, { error: "not_configured", missing });
+  else if (!normalizeSite(env.SITE_URL)) missing.push("SITE_URL (deve ser https://usuario.github.io/repositorio/, sem espaços)");
+  if (missing.length || !apiKey) return json(500, { error: "not_configured", missing });
 
   const mails = buildMails(payload, env);
   if (payload.event === "test" && mails.length === 0) return json(400, { error: "invalid_test_recipient" });
@@ -300,6 +341,22 @@ export async function handle(req: Request, env: Env, fetchFn: FetchFn): Promise<
     let failure: { provider_status: number; provider_message: string } | null = null;
     try {
       let r;
+      if (provider === "apps_script") {
+        // O Apps Script não lê cabeçalhos: o segredo vai no corpo (HTTPS). Ele responde 200 com { ok } mesmo em erro.
+        r = await fetchFn(env.APPS_SCRIPT_URL!.trim(), {
+          method: "POST",
+          headers: { "content-type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ secret: apiKey, to: m.to, subject: m.subject, html: m.html, text: m.text, name: from?.name ?? "Conceive", ...(replyTo ? { replyTo } : {}) }),
+        });
+        let j: any = null;
+        try { j = await r.json?.(); } catch { j = null; }
+        if (!j || j.ok !== true) {
+          failure = { provider_status: r.status, provider_message: j ? oneLine(String(j.error ?? "erro desconhecido"), 200) : "resposta inesperada (a implantação do script precisa estar com acesso para “Qualquer pessoa”; login do Google na resposta)" };
+          return json(502, { error: "mail_failed", sent, provider, ...failure, hint: hintFor(provider, failure.provider_status, failure.provider_message) });
+        }
+        sent++;
+        continue;
+      }
       if (provider === "brevo") {
         // Brevo não tem Idempotency-Key: uma nova tentativa do mesmo evento pode duplicar o e-mail.
         r = await fetchFn("https://api.brevo.com/v3/smtp/email", {
@@ -326,6 +383,13 @@ export async function handle(req: Request, env: Env, fetchFn: FetchFn): Promise<
     }
     if (failure) return json(502, { error: "mail_failed", sent, provider, ...failure, hint: hintFor(provider, failure.provider_status, failure.provider_message) });
     sent++;
+  }
+  if (payload.event === "test") {
+    // Valida o SITE_URL de verdade: o endereço precisa abrir (os links dos e-mails partem dele).
+    const site = normalizeSite(env.SITE_URL)!;
+    let site_status = 0;
+    try { site_status = (await fetchFn(site, { method: "GET", signal: AbortSignal.timeout(6000) })).status; } catch { site_status = 0; }
+    return json(200, { sent, provider, site_url: site, sample_link: `${site}#/acompanhar/…`, site_status });
   }
   return json(200, { sent });
 }

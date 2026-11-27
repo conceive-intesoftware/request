@@ -191,6 +191,17 @@ function Details({ d, can, busy, run, clinics, onClose }: Common & { clinics: { 
               <a href={whatsappLink(d.whatsapp, `Olá! Sobre sua solicitação ${d.protocol} no Conceive…`)} target="_blank" rel="noopener noreferrer">{formatPhoneBR(d.whatsapp)}</a>)}</li>
             {d.requester_email && <li><Icon name="mail" size={15} />{d.pii_masked ? d.requester_email : <a href={`mailto:${d.requester_email}`}>{d.requester_email}</a>}</li>}
           </ul>
+          {d.requester_email && can("comment:public") && (
+            <div className="row">
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => {
+                if (!confirm("Reenviar ao cliente o e-mail com o link de acompanhamento, os dados da solicitação e a etapa atual?")) return;
+                void run(async () => {
+                  const r = await api.adminResendRequestEmail(d.id);
+                  alert(`E-mail enviado para ${r.to}. O resultado aparece em Equipe → E-mails automáticos em alguns segundos.`);
+                });
+              }}><Icon name="mail" size={14} /> Reenviar e-mail ao cliente</button>
+            </div>
+          )}
         </Section>
         <Section icon="building" title="Clínica">
           <p className="dname">{d.clinic_name ?? <span className="warn">{d.pending_clinic_name}</span>}</p>

@@ -43,7 +43,7 @@ const ENV = { WEBHOOK_SECRET: SECRET, RESEND_API_KEY: KEY, MAIL_FROM: "Conceive 
 const post = (body: unknown, headers: Record<string, string> = { "x-webhook-secret": SECRET }) =>
   new Request("https://f.test/notify", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
 const created = { event: "request_created", protocol: "CON-2026-0001", title: "Pagamento antecipado", module: "FINANCEIRO", type: "MELHORIA_FLUXO", clinic_name: "Kardiomov", client_email: "sarah@clinica.com", tracking_token: TOKEN, requester_name: "Sarah Silva", created_at: "2026-11-25T03:25:00Z" };
-const sentBodies = (calls: Call[]) => calls.map((c) => JSON.parse(c.init.body));
+const sentBodies = (calls: Call[]) => calls.filter((c) => c.init?.body).map((c) => JSON.parse(c.init.body));
 
 console.log("notify");
 await test("sem segredo ou com segredo errado → 401 e nada é enviado", async () => {
@@ -101,14 +101,42 @@ await test("evento test: envia ao endereço informado; sem destinatário válido
   const { f, calls } = fakeFetch(() => ({}));
   const ev = { event: "test", protocol: "TESTE", title: "Teste de e-mail do Conceive", test_to: "eu@exemplo.com" };
   const r = await notify(post(ev), ENV, f);
-  assert.deepEqual(await r.json(), { sent: 1 });
+  const tj: any = await r.json();
+  assert.equal(tj.sent, 1);
+  assert.equal(tj.provider, "resend");
+  assert.match(tj.sample_link, /#\/acompanhar\//);
+  assert.ok(tj.site_url.endsWith("/") && "site_status" in tj);
   const m = sentBodies(calls)[0];
   assert.deepEqual(m.to, ["eu@exemplo.com"]);
   assert.match(m.subject, /Teste de e-mail/);
   assert.ok(m.html.includes("funcionando") && m.html.includes("resend"));
   const bad = await notify(post({ ...ev, test_to: "xx" }), ENV, f);
   assert.equal(bad.status, 400);
-  assert.equal(calls.length, 1);
+  assert.equal(sentBodies(calls).length, 1);
+});
+await test("SITE_URL malformado é normalizado (corta #/… e espaços) e inválido é recusado", async () => {
+  const { f, calls } = fakeFetch(() => ({ body: { id: "1" } }));
+  const env1 = { ...ENV, SITE_URL: "  https://x.github.io/app/#/admin " };
+  const r = await notify(post(created), env1, f);
+  assert.equal(r.status, 200);
+  const cli = sentBodies(calls)[0];
+  assert.ok(cli.html.includes("https://x.github.io/app/#/acompanhar/"), "link do cliente");
+  assert.ok(!cli.html.includes("#/admin#"));
+  const r2 = await notify(post(created), { ...ENV, SITE_URL: "meusite.com" }, f);
+  assert.equal(r2.status, 500);
+});
+await test("request_resend: reenvia ao cliente com link, dados e etapa atual; sem e-mail → nada enviado", async () => {
+  const { f, calls } = fakeFetch(() => ({ body: { id: "1" } }));
+  const r = await notify(post({ ...created, event: "request_resend", status: "EM_ANALISE" }), ENV, f);
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { sent: 1 });
+  const [m] = sentBodies(calls);
+  assert.deepEqual(m.to, ["sarah@clinica.com"]);
+  assert.match(m.subject, /Reenvio/);
+  assert.match(m.html, /#\/acompanhar\/[0-9a-f]{48}/);
+  assert.match(m.text, /#\/acompanhar\//);
+  const r2 = await notify(post({ ...created, event: "request_resend", client_email: null }), ENV, f);
+  assert.deepEqual(await r2.json(), { sent: 0 });
 });
 await test("request_created: confirmação ao cliente (com link) + aviso à equipe (sem dados pessoais)", async () => {
   const { f, calls } = fakeFetch(() => ({ body: { id: "1" } }));
@@ -278,6 +306,50 @@ await test("Brevo: remetente simples (sem nome), sem chave → 500, erro → 502
   const r = await notify(post(created), base, e.f);
   assert.equal(r.status, 502);
   assert.ok(!(await r.text()).includes("xkeysib-SEGREDO"));
+});
+const GAS = "https://script.google.com/macros/s/AKfycbxEXEMPLO_123-abc/exec";
+const GENV = { ...ENV, MAIL_PROVIDER: "apps_script", APPS_SCRIPT_URL: GAS, APPS_SCRIPT_SECRET: "senha-do-script-SEGREDO", RESEND_API_KEY: undefined, MAIL_FROM: "Conceive <id.conceive@gmail.com>", REPLY_TO: "suporte@x.com" };
+await test("apps_script (Gmail): POST no URL /exec com o segredo no corpo, destinatários, nome e Reply-To", async () => {
+  const { f, calls } = fakeFetch(() => ({ body: { ok: true, remaining: 90 } }));
+  const r = await notify(post(created), GENV, f);
+  assert.deepEqual(await r.json(), { sent: 2 });
+  assert.equal(calls[0].url, GAS);
+  assert.equal(calls[0].init.method, "POST");
+  const b = JSON.parse(calls[0].init.body);
+  assert.equal(b.secret, "senha-do-script-SEGREDO");
+  assert.deepEqual(b.to, ["sarah@clinica.com"]);
+  assert.equal(b.name, "Conceive"); assert.equal(b.replyTo, "suporte@x.com");
+  assert.ok(b.subject.includes("CON-2026-0001") && b.html.includes("CON-2026-0001") && b.text.includes("CON-2026-0001"));
+  assert.deepEqual(JSON.parse(calls[1].init.body).to, ["po@x.com", "dev@x.com"]);
+  assert.ok(!("authorization" in calls[0].init.headers));
+});
+await test("apps_script: MAIL_FROM é opcional; configuração incompleta lista o que falta (URL fora do padrão é recusada)", async () => {
+  const { f, calls } = fakeFetch(() => ({ body: { ok: true } }));
+  assert.equal((await notify(post(created), { ...GENV, MAIL_FROM: undefined }, f)).status, 200);
+  assert.equal(JSON.parse(calls[0].init.body).name, "Conceive");
+  const bad = await notify(post(created), { ...GENV, APPS_SCRIPT_URL: "https://evil.example.com/exec", APPS_SCRIPT_SECRET: undefined }, f);
+  assert.equal(bad.status, 500);
+  assert.deepEqual((await bad.json()).missing, ["APPS_SCRIPT_URL (deve ser https://script.google.com/macros/s/.../exec)", "APPS_SCRIPT_SECRET"]);
+  assert.equal(calls.length, 2, "nenhuma chamada ao endereço inválido");
+});
+await test("apps_script: erro do script (segredo, cota) e resposta HTML de login viram 502 com dica", async () => {
+  const un = fakeFetch(() => ({ body: { ok: false, error: "unauthorized" } }));
+  const a = await (await notify(post(created), GENV, un.f)).json();
+  assert.equal(a.provider, "apps_script"); assert.match(a.hint, /APPS_SCRIPT_SECRET/);
+  assert.ok(!JSON.stringify(a).includes("senha-do-script-SEGREDO"));
+  const q = fakeFetch(() => ({ body: { ok: false, error: "Service invoked too many times for one day: email." } }));
+  assert.match((await (await notify(post(created), GENV, q.f)).json()).hint, /limite diário/);
+  const html = (async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } })) as any;
+  const h = await (await notify(post(created), GENV, html)).json();
+  assert.match(h.hint, /Qualquer pessoa/);
+});
+await test("apps_script: o e-mail de teste do painel também funciona", async () => {
+  const { f, calls } = fakeFetch(() => ({ body: { ok: true } }));
+  const r = await notify(post({ event: "test", protocol: "TESTE", title: "Teste de e-mail do Conceive", test_to: "eu@exemplo.com" }), GENV, f);
+  assert.equal(((await r.json()) as any).sent, 1);
+  const mb = sentBodies(calls)[0];
+  assert.deepEqual(mb.to, ["eu@exemplo.com"]);
+  assert.ok(mb.html.includes("apps_script"));
 });
 await test("sla_digest sem equipe cadastrada não envia nada", async () => {
   const { f, calls } = fakeFetch(() => ({}));

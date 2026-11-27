@@ -21,7 +21,7 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 │ Postgres: RPCs SECURITY DEFINER ──► checam permissão ──► mascaram PII ──►  │
 │           gravam auditoria; RLS; triggers; audit_logs imutável             │
 │ Storage: bucket privado "attachments" (50 MB, só tipos permitidos)         │
-│ Edge Functions: notify (e-mail via Brevo/Resend) · external-task + external-sync (Redmine/Pipefy)│
+│ Edge Functions: notify (e-mail via Brevo, Resend ou Gmail/Apps Script) · external-task + external-sync (Redmine/Pipefy)│
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,7 +52,8 @@ Cliente (sem cadastro)                         Equipe (e-mail + senha + MFA)
 
 ```
 supabase/Supabase-completo.sql   TODO o banco em um arquivo único (+ opcionais na Parte B)   ← rodar no SQL Editor
-supabase/functions/              notify (Brevo/Resend), external-task e external-sync (Redmine/Pipefy) e admin-users (criar usuários)
+supabase/apps-script/Code.gs    Script do Google para enviar e-mails pelo Gmail (sem domínio próprio)
+supabase/functions/              notify (Brevo/Resend/Gmail), external-task e external-sync (Redmine/Pipefy) e admin-users (criar usuários)
 scripts/apply-csp.mjs            Insere a Content-Security-Policy no build
 supabase/tests/                  Mock do Supabase + suíte de testes do banco
 src/lib/                         api.ts (RPCs), validação, telefone, CSV, auth, roteador

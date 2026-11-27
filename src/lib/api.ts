@@ -43,6 +43,8 @@ export class ApiError extends Error {
 }
 
 const FRIENDLY: [RegExp, string][] = [
+  [/no_client_email/i, "Esta solicitação não tem e-mail do cliente cadastrado."],
+  [/resend_limit/i, "Limite de 5 reenvios por dia para esta solicitação atingido. Tente amanhã."],
   [/rate_limited/i, "Muitas solicitações em pouco tempo. Aguarde alguns minutos e tente novamente."],
   [/invalid_phone/i, "WhatsApp inválido. Use o formato (84) 99999-9999."],
   [/invalid_name/i, "Informe seu nome completo."],
@@ -259,6 +261,8 @@ export const adminSyncExternalNow = () => rpc<{ queued: boolean }>("admin_sync_e
 export const adminNotifyStatus = () => rpc<NotifyStatus>("admin_notify_status");
 /** Envia um e-mail de teste (ao próprio Admin, ou a `to`) pela mesma rota dos e-mails reais. */
 export const adminSendTestEmail = (to?: string) => rpc<{ to: string }>("admin_send_test_email", { p_to: to ?? null });
+/** Reenvia ao cliente o e-mail com o link de acompanhamento e os dados da solicitação. Devolve o e-mail mascarado. */
+export const adminResendRequestEmail = (id: string) => rpc<{ to: string }>("admin_resend_request_email", { p_id: id });
 export const adminListStaff = () => rpc<StaffMember[]>("admin_list_staff");
 export const adminUpsertStaff = (email: string, name: string, role: StaffRole, active: boolean) =>
   rpc<string>("admin_upsert_staff", { p_email: email, p_name: name, p_role: role, p_active: active });

@@ -762,6 +762,37 @@ begin
   delete from private.app_settings where key in ('notify_url', 'notify_secret');
 end $t$;
 
+-- ───────── 24c2. reenvio do e-mail ao cliente ─────────
+do $t$
+declare r1 record; j jsonb; n int; i int;
+begin
+  select * into r1 from tests.mk('Reenvio de e-mail de teste ao cliente solicitante', null, 'Clínica Sim');
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform tests.fails($$select public.admin_resend_request_email(gen_random_uuid())$$, 'notify_not_configured', 'reenvio exige o banco ligado');
+  perform tests.logout();
+  insert into private.app_settings (key, value) values ('notify_url', 'https://x.supabase.co/functions/v1/notify'), ('notify_secret', 'segredo-teste-com-mais-de-trinta-caracteres');
+  select count(*) into n from net.calls;
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  j := public.admin_resend_request_email(r1.id);
+  perform tests.ok(j ->> 'to' = 'm***@exemplo.com', 'reenvio devolve só o e-mail mascarado');
+  perform tests.fails($$select public.admin_resend_request_email(gen_random_uuid())$$, 'not_found', 'solicitação inexistente');
+  perform tests.logout();
+  perform tests.ok((select count(*) = n + 1 from net.calls)
+    and (select body ->> 'event' = 'request_resend' and body ->> 'client_email' = 'maria.teste@exemplo.com' and body ->> 'tracking_token' = r1.token
+         and body ->> 'status' = 'RECEBIDO' and body ->> 'protocol' = r1.protocol and body ? 'event_id' from net.calls order by id desc limit 1), 'reenvio dispara request_resend com link, dados e etapa');
+  perform tests.ok(exists (select 1 from public.audit_logs where entity = 'request_email_resend' and entity_id = r1.id::text), 'reenvio fica na auditoria');
+  for i in 1..4 loop perform private.notify_event(jsonb_build_object('event', 'request_resend', 'protocol', r1.protocol)); end loop;
+  perform tests.login('a0000000-0000-0000-0000-000000000001', 'aal2');
+  perform tests.fails(format($$select public.admin_resend_request_email(%L)$$, r1.id), 'resend_limit', 'limite de 5 reenvios por dia');
+  perform tests.logout();
+  update public.requests set requester_email = null where id = r1.id;
+  perform tests.login('a0000000-0000-0000-0000-000000000002', 'aal2');
+  perform tests.fails(format($$select public.admin_resend_request_email(%L)$$, r1.id), 'no_client_email', 'sem e-mail do cliente não reenvia');
+  perform tests.logout();
+  perform tests.ok(not has_function_privilege('anon', 'public.admin_resend_request_email(uuid)', 'execute'), 'anon não executa o reenvio');
+  delete from private.app_settings where key in ('notify_url', 'notify_secret');
+end $t$;
+
 -- ───────── 24d. pedidos parecidos e sincronização de status externo ─────────
 do $t$
 declare r1 record; r2 record; r3 record; j jsonb; n int; v_cnt int;
