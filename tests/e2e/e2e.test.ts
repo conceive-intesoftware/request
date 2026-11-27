@@ -452,6 +452,25 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
     await po.waitForSelector("section[aria-label='Em análise de produto'] .card-k");
     const card = po.locator(`section[aria-label='Em análise de produto'] .card-k:has-text('${TITLE}')`);
     await snap(po, "04-kanban");
+    // layout: nenhum texto vaza do cartão, e todas as colunas têm a mesma altura
+    const geo = await po.evaluate(() => {
+      const cards = [...document.querySelectorAll(".kanban .card-k")] as HTMLElement[];
+      const cols = [...document.querySelectorAll(".kanban .col")] as HTMLElement[];
+      return { overflow: cards.filter((c) => c.scrollWidth > c.clientWidth + 1).length, heights: new Set(cols.map((c) => Math.round(c.getBoundingClientRect().height))).size, widths: new Set(cols.map((c) => Math.round(c.getBoundingClientRect().width))).size };
+    });
+    assert.equal(geo.overflow, 0, "nenhum cartão com texto vazando");
+    assert.equal(geo.heights, 1, "colunas com a mesma altura");
+    assert.equal(geo.widths, 1, "colunas com a mesma largura");
+    // título gigante sem espaços (caso real: "1111…") não pode estourar o cartão nem alargar a coluna
+    const long = await po.evaluate(() => {
+      const t = document.querySelector(".kanban .k-title") as HTMLElement; const old = t.textContent; const card = t.closest(".card-k") as HTMLElement;
+      const col = card.closest(".col") as HTMLElement; const w0 = col.getBoundingClientRect().width;
+      t.textContent = "1".repeat(200);
+      const r = { overflow: card.scrollWidth > card.clientWidth + 1, grew: Math.abs(col.getBoundingClientRect().width - w0) > 1 };
+      t.textContent = old; return r;
+    });
+    assert.deepEqual(long, { overflow: false, grew: false }, "título longo contido");
+    if (process.env.E2E_SHOTS) await po.locator(".kanban").screenshot({ path: resolve(OUT, "kanban.png") });
     await card.dragTo(po.locator("section[aria-label='Aprovado para roadmap']"));
     await po.waitForSelector(`section[aria-label='Aprovado para roadmap'] .card-k:has-text('${TITLE}')`);
     const v3 = await newPage();
@@ -523,6 +542,25 @@ async function login(page: any, email: string, opts: { firstTime: boolean; wrong
   await step("equipe: seção 'E-mails automáticos' aparece para o Admin (vazia sem configuração)", async () => {
     await admin.waitForSelector("h2:has-text('E-mails automáticos')");
     await admin.waitForSelector("text=Nenhum envio registrado ainda");
+  });
+  await step("menu lateral: atalhos do site público e logo abrem em nova aba, sem sair do painel", async () => {
+    const links = admin.locator(".side-public a");
+    assert.equal(await links.count(), 3);
+    for (const [i, href] of ["#/solicitar", "#/comunidade", "#/acompanhar"].entries()) {
+      assert.equal(await links.nth(i).getAttribute("href"), href);
+      assert.equal(await links.nth(i).getAttribute("target"), "_blank");
+      assert.match((await links.nth(i).getAttribute("rel")) ?? "", /noopener/);
+    }
+    assert.equal(await admin.locator("a.side-brand").getAttribute("target"), "_blank");
+    if (process.env.E2E_SHOTS) await admin.locator(".sidebar").screenshot({ path: resolve(OUT, "sidebar.png") });
+    const [pop] = await Promise.all([admin.waitForEvent("popup"), links.nth(0).click()]);
+    await pop.waitForSelector("text=/Nova solicitação|Solicitar|Enviar solicitação/i", { timeout: 10000 });
+    assert.match(pop.url(), /#\/solicitar$/);
+    await pop.close();
+    const [pop2] = await Promise.all([admin.waitForEvent("popup"), admin.click("a.side-brand")]);
+    assert.match(pop2.url(), /#\/solicitar$/);
+    await pop2.close();
+    assert.ok(await admin.isVisible("h2:has-text('E-mails automáticos')"), "o painel continua aberto na aba original");
   });
   await step("equipe: trilha de e-mails mostra tipo, protocolo e situação legíveis (sem códigos soltos)", async () => {
     db.sql(`insert into private.notify_log (event, protocol, outcome, detail, created_at) values

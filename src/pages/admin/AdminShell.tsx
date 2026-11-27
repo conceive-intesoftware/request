@@ -59,16 +59,24 @@ export default function AdminShell({ auth }: { auth: AuthState }) {
     { to: "/admin/equipe", label: "Equipe", icon: "users", show: can("user:manage") },
     { to: "/admin/importar", label: "Importar", icon: "upload", show: can("import:run") },
   ];
+  // Atalhos para o site do cliente. Abrem em NOVA ABA: o painel (e o login da equipe) continuam abertos aqui.
+  const publicLinks: { to: string; label: string; hint: string; icon: IconName }[] = [
+    { to: "/solicitar", label: "Nova solicitação", hint: "Formulário do cliente", icon: "plus" },
+    { to: "/comunidade", label: "Roadmap e votos", hint: "Evolução e votação", icon: "compass" },
+    { to: "/acompanhar", label: "Acompanhamento", hint: "Consulta pelo link", icon: "search" },
+  ];
   const initials = (ctx.name ?? "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
 
   return (
     <div className="app">
       <a className="skip-link" href="#conteudo" onClick={(e) => { e.preventDefault(); document.getElementById("conteudo")?.focus(); }}>Pular para o conteúdo</a>
       <aside className="sidebar">
-        <div className="side-brand">
+        <a className="side-brand" href="#/solicitar" target="_blank" rel="noopener noreferrer"
+           aria-label="Abrir o site público da Conceive em uma nova aba" title="Abrir o site público (nova aba)">
           <Logo size={34} />
           <span><strong>Conceive</strong><small>Painel da equipe</small></span>
-        </div>
+          <Icon name="external" size={14} className="brand-ext" />
+        </a>
         <PulseLine className="side-pulse" />
         <nav className="side-nav" aria-label="Painel">
           {items.filter((i) => i.show).map((i) => (
@@ -77,6 +85,20 @@ export default function AdminShell({ auth }: { auth: AuthState }) {
             </Link>
           ))}
         </nav>
+        <section className="side-public" aria-labelledby="side-public-title">
+          <p className="sp-label" id="side-public-title"><span className="sp-dot" aria-hidden="true" />Site público</p>
+          <ul>
+            {publicLinks.map((l) => (
+              <li key={l.to}>
+                <a href={`#${l.to}`} target="_blank" rel="noopener noreferrer" aria-label={`${l.label} (abre em nova aba)`} title={`${l.label} (nova aba)`}>
+                  <span className="sp-ico" aria-hidden="true"><Icon name={l.icon} size={16} /></span>
+                  <span className="sp-txt"><strong>{l.label}</strong><small>{l.hint}</small></span>
+                  <Icon name="external" size={14} className="sp-arrow" />
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
         <div className="side-user">
           <span className="avatar" aria-hidden="true">{initials}</span>
           <span className="who"><strong>{ctx.name}</strong><small>{labelOf(STAFF_ROLES, ctx.role)}</small></span>

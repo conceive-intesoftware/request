@@ -303,6 +303,14 @@ Entre como Admin → **Importar** → envie o CSV exportado do Google Planilhas 
 
 ---
 
+## Voltar ao site público sem sair do painel (versão 4.4)
+
+No menu lateral do painel há o bloco **Site público**, com **Nova solicitação**, **Roadmap e votos** e **Acompanhamento**. O logo **Conceive** também abre o site. Tudo abre em **nova aba**, então o painel e o seu login continuam abertos na aba original.
+
+## Quadro Kanban (versão 4.5)
+
+Colunas com a mesma largura e altura, cada uma com cor própria; títulos longos ficam contidos no cartão (até 3 linhas); colunas vazias mostram uma área tracejada “Arraste um cartão para cá” e destacam a coluna de destino durante o arrasto. Cada cartão mostra protocolo, data, título, clínica, módulo, prioridade e avisos (similares, RICE, aguardando resposta).
+
 ## Problemas comuns
 
 | Sintoma | Causa / solução |
